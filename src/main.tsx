@@ -69,6 +69,7 @@ function App() {
         leftEditor = monaco.editor.create(leftEditorContainer, {
             theme: "vs-dark",
             lineNumbers: 'on',
+            automaticLayout: true
         })
         leftEditor.onDidChangeModelContent(() => {
             deferedBuild()
@@ -78,6 +79,7 @@ function App() {
             lineNumbers: 'on',
             readOnly: true,
             value: ``,
+            automaticLayout: true
         })
     })
 
