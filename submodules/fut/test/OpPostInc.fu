@@ -1,0 +1,13 @@
+public static class Test
+{
+	public static bool Run()
+	{
+		int a = 42;
+		int b = a++;
+		byte[2] ba;
+		ba[0] = 200;
+		if (ba[0]++ != 200)
+			return false;
+		return a == 43 && b == 42 && ba[0] == 201;
+	}
+}

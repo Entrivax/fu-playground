@@ -1,0 +1,39 @@
+abstract class Base
+{
+	internal virtual int Foo() //FAIL: cl
+	{
+		return 5;
+	}
+
+	protected virtual int Quux(int i) => i;
+}
+
+class Derived : Base
+{
+	internal override int Foo()
+	{
+		return base.Foo() + base.Quux(10);
+	}
+
+	internal int Bar()
+	{
+		return Foo();
+	}
+}
+
+class MostDerived : Derived
+{
+	protected override int Quux(int i) => base.Quux(42);
+
+	internal int Baz() => Quux(1);
+}
+
+public static class Test
+{
+	public static bool Run()
+	{
+		Derived() d;
+		MostDerived() m;
+		return d.Foo() == 15 && d.Bar() == 15 && m.Baz() == 42;
+	}
+}

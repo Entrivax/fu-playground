@@ -1,0 +1,25 @@
+public static class Test
+{
+	public static bool Run()
+	{
+		List<int>() li; //FAIL: cl
+		li.Add(42);
+		li.Add(15);
+		li.Add(15);
+
+		List<double>() ld;
+		ld.Add(Math.PI);
+
+		List<string>() lsp;
+		lsp.Add("foo");
+		lsp.Add("bar");
+
+		List<string()>() lss;
+		lss.Add("foo");
+		lss.Add("bar");
+		return li.Contains(15) && !li.Contains(1)
+			&& ld.Contains(Math.PI)
+			&& lsp.Contains("bar") && !lsp.Contains("quux")
+			&& lss.Contains("bar") && !lss.Contains("quux");
+	}
+}

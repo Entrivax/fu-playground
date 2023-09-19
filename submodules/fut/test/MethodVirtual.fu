@@ -1,0 +1,35 @@
+abstract class Base
+{
+	internal virtual bool Foo() //FAIL: cl
+	{
+		return false;
+	}
+}
+
+class Derived : Base
+{
+	internal override bool Foo()
+	{
+		return true;
+	}
+
+	internal virtual bool Bar() => true;
+}
+
+class MostDerived : Derived
+{
+	internal override bool Foo()
+	{
+		return false;
+	}
+}
+
+public static class Test
+{
+	public static bool Run()
+	{
+		Base# d = new Derived();
+		Derived# m = new MostDerived();
+		return d.Foo() && m.Bar() && !m.Foo();
+	}
+}

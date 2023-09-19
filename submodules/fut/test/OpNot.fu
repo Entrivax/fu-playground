@@ -1,0 +1,18 @@
+public static class Test
+{
+	public static bool Run()
+	{
+		int i = 5;
+		bool a = false;
+		bool t = true;
+		return !a
+			&& !(a && a)
+			&& !(a && !a)
+			&& !(a & a)
+			&& !(a & !a)
+			&& !(!t & a)
+			&& (!a | !a)
+			&& !(i == 0)
+			&& !(i != 5);
+	}
+}

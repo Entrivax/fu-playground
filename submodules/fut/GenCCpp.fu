@@ -1,0 +1,261 @@
+// GenCCpp.fu - C/C++ code generator
+//
+// Copyright (C) 2011-2023  Piotr Fusik
+//
+// This file is part of Fusion Transpiler,
+// see https://github.com/fusionlanguage/fut
+//
+// Fusion Transpiler is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Fusion Transpiler is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with Fusion Transpiler.  If not, see http://www.gnu.org/licenses/
+
+public abstract class GenCCpp : GenCCppD
+{
+	protected abstract void IncludeStdInt!();
+
+	protected abstract void IncludeAssert!();
+
+	protected abstract void IncludeMath!();
+
+	void WriteCIncludes!()
+	{
+		WriteIncludes("#include <", ">");
+	}
+
+	protected override int GetLiteralChars() => 127;
+
+	protected virtual void WriteNumericType!(FuId id)
+	{
+		switch (id) {
+		case FuId.SByteRange:
+			IncludeStdInt();
+			Write("int8_t");
+			break;
+		case FuId.ByteRange:
+			IncludeStdInt();
+			Write("uint8_t");
+			break;
+		case FuId.ShortRange:
+			IncludeStdInt();
+			Write("int16_t");
+			break;
+		case FuId.UShortRange:
+			IncludeStdInt();
+			Write("uint16_t");
+			break;
+		case FuId.IntType:
+			Write("int");
+			break;
+		case FuId.LongType:
+			IncludeStdInt();
+			Write("int64_t");
+			break;
+		case FuId.FloatType:
+			Write("float");
+			break;
+		case FuId.DoubleType:
+			Write("double");
+			break;
+		default:
+			assert false;
+		}
+	}
+
+	internal override void VisitSymbolReference!(FuSymbolReference expr, FuPriority parent)
+	{
+		switch (expr.Symbol.Id) {
+		case FuId.MathNaN:
+			IncludeMath();
+			Write("NAN");
+			break;
+		case FuId.MathNegativeInfinity:
+			IncludeMath();
+			Write("-INFINITY");
+			break;
+		case FuId.MathPositiveInfinity:
+			IncludeMath();
+			Write("INFINITY");
+			break;
+		default:
+			base.VisitSymbolReference(expr, parent);
+			break;
+		}
+	}
+
+	protected static FuExpr? IsStringEmpty(FuBinaryExpr expr)
+	{
+		if (expr.Left is FuSymbolReference symbol && symbol.Symbol.Id == FuId.StringLength
+			&& expr.Right.IsLiteralZero())
+			return symbol.Left;
+		return null;
+	}
+
+	protected abstract void WriteArrayPtr!(FuExpr expr, FuPriority parent);
+
+	protected void WriteArrayPtrAdd!(FuExpr array, FuExpr index)
+	{
+		if (index.IsLiteralZero())
+			WriteArrayPtr(array, FuPriority.Argument);
+		else {
+			WriteArrayPtr(array, FuPriority.Add);
+			Write(" + ");
+			index.Accept(this, FuPriority.Mul);
+		}
+	}
+
+	protected static FuCallExpr? IsStringSubstring(FuExpr expr)
+	{
+		if (expr is FuCallExpr call) {
+			FuId id = call.Method.Symbol.Id;
+			if ((id == FuId.StringSubstring && call.Arguments.Count == 2)
+			 || id == FuId.UTF8GetString)
+				return call;
+		}
+		return null;
+	}
+
+	protected static bool IsUTF8GetString(FuCallExpr call) => call.Method.Symbol.Id == FuId.UTF8GetString;
+
+	protected static FuExpr GetStringSubstringPtr(FuCallExpr call) => IsUTF8GetString(call) ? call.Arguments[0] : call.Method.Left;
+
+	protected static FuExpr GetStringSubstringOffset(FuCallExpr call) => call.Arguments[IsUTF8GetString(call) ? 1 : 0];
+
+	protected static FuExpr GetStringSubstringLength(FuCallExpr call) => call.Arguments[IsUTF8GetString(call) ? 2 : 1];
+
+	protected void WriteStringPtrAdd!(FuCallExpr call)
+	{
+		WriteArrayPtrAdd(GetStringSubstringPtr(call), GetStringSubstringOffset(call));
+	}
+
+	protected static FuExpr? IsTrimSubstring(FuBinaryExpr expr)
+	{
+		FuCallExpr? call = IsStringSubstring(expr.Right);
+		if (call != null
+		 && !IsUTF8GetString(call)
+		 && expr.Left is FuSymbolReference leftSymbol && GetStringSubstringPtr(call).IsReferenceTo(leftSymbol.Symbol) // TODO: more complex expr
+		 && GetStringSubstringOffset(call).IsLiteralZero())
+			return GetStringSubstringLength(call);
+		return null;
+	}
+
+	protected void WriteStringLiteralWithNewLine!(string s)
+	{
+		WriteChar('"');
+		Write(s);
+		Write("\\n\"");
+	}
+
+	protected virtual void WriteUnreachable!(FuAssert statement)
+	{
+		// TODO: C23, C++23: unreachable()
+		Write("abort();");
+		if (statement.Message != null) {
+			Write(" // ");
+			statement.Message.Accept(this, FuPriority.Argument);
+		}
+		WriteNewLine();
+	}
+
+	protected override void WriteAssert!(FuAssert statement)
+	{
+		if (statement.CompletesNormally()) {
+			WriteTemporaries(statement.Cond);
+			IncludeAssert();
+			Write("assert(");
+			if (statement.Message == null)
+				statement.Cond.Accept(this, FuPriority.Argument);
+			else {
+				statement.Cond.Accept(this, FuPriority.CondAnd);
+				Write(" && ");
+				statement.Message.Accept(this, FuPriority.Argument);
+			}
+			WriteLine(");");
+		}
+		else
+			WriteUnreachable(statement);
+	}
+
+	internal override void VisitSwitch!(FuSwitch statement)
+	{
+		if (statement.Value.Type is FuStringType || statement.HasWhen())
+			WriteSwitchAsIfsWithGoto(statement);
+		else
+			base.VisitSwitch(statement);
+	}
+
+	protected void WriteMethods!(FuClass klass)
+	{
+		for (FuSymbol? symbol = klass.First; symbol != null; symbol = symbol.Next) {
+			if (symbol is FuMethod method) {
+				WriteMethod(method);
+				this.CurrentTemporaries.Clear();
+			}
+		}
+	}
+
+	protected abstract void WriteClassInternal!(FuClass klass);
+
+	protected override void WriteClass!(FuClass klass, FuProgram program)
+	{
+		// topological sorting of class hierarchy and class storage fields
+		if (!WriteBaseClass(klass, program))
+			return;
+		for (FuSymbol? symbol = klass.First; symbol != null; symbol = symbol.Next) {
+			if (symbol is FuField field && field.Type.GetBaseType() is FuStorageType storage && storage.Class.Id == FuId.None)
+				WriteClass(storage.Class, program);
+		}
+		WriteClassInternal(klass);
+	}
+
+	static string() ChangeExtension(string path, string ext)
+	{
+		int extIndex = path.Length;
+		for (int i = extIndex; --i >= 0 && path[i] != '/' && path[i] != '\\'; ) {
+			if (path[i] == '.') {
+				extIndex = i;
+				break;
+			}
+		}
+		return path.Substring(0, extIndex) + ext;
+	}
+
+	protected void CreateHeaderFile!(string headerExt)
+	{
+		CreateFile(null, ChangeExtension(this.OutputFile, headerExt));
+		WriteLine("#pragma once");
+		WriteCIncludes();
+	}
+
+	static string() GetFilenameWithoutExtension(string path)
+	{
+		int pathLength = path.Length;
+		int extIndex = pathLength;
+		int i = pathLength;
+		while (--i >= 0 && path[i] != '/' && path[i] != '\\') {
+			if (path[i] == '.' && extIndex == pathLength)
+				extIndex = i;
+		}
+		i++;
+		return path.Substring(i, extIndex - i);
+	}
+
+	protected void CreateImplementationFile!(FuProgram program, string headerExt)
+	{
+		CreateOutputFile();
+		WriteTopLevelNatives(program);
+		WriteCIncludes();
+		Write("#include \"");
+		Write(GetFilenameWithoutExtension(this.OutputFile));
+		Write(headerExt);
+		WriteCharLine('"');
+	}
+}

@@ -1,0 +1,23 @@
+public static class Test
+{
+	public static bool Run()
+	{
+		int i = 0;
+		int s = 0;
+		while (i < 5) {
+			if (++i == 2)
+				continue;
+			s += i;
+		}
+		int r = 0;
+		i = 0;
+		while (++i < 10) {
+			if (i != 3) {
+				r += i;
+				continue;
+			}
+			break;
+		}
+		return s == 13 && r == 3;
+	}
+}

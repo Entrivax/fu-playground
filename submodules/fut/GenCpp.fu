@@ -1,0 +1,1920 @@
+// GenCpp.fu - C++ code generator
+//
+// Copyright (C) 2011-2023  Piotr Fusik
+//
+// This file is part of Fusion Transpiler,
+// see https://github.com/fusionlanguage/fut
+//
+// Fusion Transpiler is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Fusion Transpiler is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with Fusion Transpiler.  If not, see http://www.gnu.org/licenses/
+
+public class GenCpp : GenCCpp
+{
+	bool UsingStringViewLiterals;
+	bool HasEnumFlags;
+	bool StringReplace;
+
+	protected override string GetTargetName() => "C++";
+
+	protected override void IncludeStdInt!()
+	{
+		Include("cstdint");
+	}
+
+	protected override void IncludeAssert!()
+	{
+		Include("cassert");
+	}
+
+	protected override void IncludeMath!()
+	{
+		Include("cmath");
+	}
+
+	internal override void VisitLiteralNull!()
+	{
+		Write("nullptr");
+	}
+
+	void StartMethodCall!(FuExpr obj)
+	{
+		obj.Accept(this, FuPriority.Primary);
+		WriteMemberOp(obj, null);
+	}
+
+	protected override void WriteInterpolatedStringArg!(FuExpr expr)
+	{
+		if (expr.Type is FuClassType klass && klass.Class.Id != FuId.StringClass) {
+			StartMethodCall(expr);
+			Write("toString()");
+		}
+		else
+			base.WriteInterpolatedStringArg(expr);
+	}
+
+	internal override void VisitInterpolatedString!(FuInterpolatedString expr, FuPriority parent)
+	{
+		Include("format");
+		Write("std::format(\"");
+		foreach (FuInterpolatedPart part in expr.Parts) {
+			WriteDoubling(part.Prefix, '{');
+			WriteChar('{');
+			WritePyFormat(part);
+		}
+		WriteDoubling(expr.Suffix, '{');
+		WriteChar('"');
+		WriteInterpolatedStringArgs(expr);
+		WriteChar(')');
+	}
+
+	void WriteCamelCaseNotKeyword!(string name)
+	{
+		WriteCamelCase(name);
+		switch (name) {
+		case "And":
+		case "Asm":
+		case "Auto":
+		case "Bool":
+		case "Break":
+		case "Byte":
+		case "Case":
+		case "Catch":
+		case "Char":
+		case "Class":
+		case "Const":
+		case "Continue":
+		case "Default":
+		case "Delete":
+		case "Do":
+		case "Double":
+		case "Else":
+		case "Enum":
+		case "Explicit":
+		case "Export":
+		case "Extern":
+		case "False":
+		case "Float":
+		case "For":
+		case "Goto":
+		case "If":
+		case "Inline":
+		case "Int":
+		case "Long":
+		case "Namespace":
+		case "New":
+		case "Not":
+		case "Nullptr":
+		case "Operator":
+		case "Or":
+		case "Override":
+		case "Private":
+		case "Protected":
+		case "Public":
+		case "Register":
+		case "Return":
+		case "Short":
+		case "Signed":
+		case "Sizeof":
+		case "Static":
+		case "Struct":
+		case "Switch":
+		case "Throw":
+		case "True":
+		case "Try":
+		case "Typedef":
+		case "Union":
+		case "Unsigned":
+		case "Using":
+		case "Virtual":
+		case "Void":
+		case "Volatile":
+		case "While":
+		case "Xor":
+		case "and":
+		case "asm":
+		case "auto":
+		case "catch":
+		case "char":
+		case "delete":
+		case "explicit":
+		case "export":
+		case "extern":
+		case "goto":
+		case "inline":
+		case "namespace":
+		case "not":
+		case "nullptr":
+		case "operator":
+		case "or":
+		case "private":
+		case "register":
+		case "signed":
+		case "sizeof":
+		case "struct":
+		case "try":
+		case "typedef":
+		case "union":
+		case "unsigned":
+		case "using":
+		case "volatile":
+		case "xor":
+			WriteChar('_');
+			break;
+		default:
+			break;
+		}
+	}
+
+	protected override void WriteName!(FuSymbol symbol)
+	{
+		switch (symbol) {
+		case FuContainerType _:
+			Write(symbol.Name);
+			break;
+		case FuVar _:
+		case FuMember _:
+			WriteCamelCaseNotKeyword(symbol.Name);
+			break;
+		default:
+			assert false;
+		}
+	}
+
+	protected override void WriteLocalName!(FuSymbol symbol, FuPriority parent)
+	{
+		if (symbol is FuField)
+			Write("this->");
+		WriteName(symbol);
+	}
+
+	void WriteCollectionType!(string name, FuType elementType)
+	{
+		Include(name);
+		Write("std::");
+		Write(name);
+		WriteChar('<');
+		WriteType(elementType, false);
+		WriteChar('>');
+	}
+
+	protected override void WriteType!(FuType type, bool promote)
+	{
+		switch (type) {
+		case FuIntegerType _:
+			WriteNumericType(GetTypeId(type, promote));
+			break;
+		case FuDynamicPtrType dynamic:
+			switch (dynamic.Class.Id) {
+			case FuId.RegexClass:
+				Include("regex");
+				Write("std::regex");
+				break;
+			case FuId.ArrayPtrClass:
+				Include("memory");
+				Write("std::shared_ptr<");
+				WriteType(dynamic.GetElementType(), false);
+				Write("[]>");
+				break;
+			default:
+				Include("memory");
+				Write("std::shared_ptr<");
+				Write(dynamic.Class.Name);
+				WriteChar('>');
+				break;
+			}
+			break;
+		case FuClassType klass:
+			if (klass.Class.TypeParameterCount == 0) {
+				if (klass.Class.Id == FuId.StringClass) {
+					string cppType = klass.Id == FuId.StringStorageType ? "string" : "string_view";
+					Include(cppType);
+					Write("std::");
+					Write(cppType);
+					break;
+				}
+				if (!(klass is FuReadWriteClassType))
+					Write("const ");
+				switch (klass.Class.Id) {
+				case FuId.TextWriterClass:
+					Include("iostream");
+					Write("std::ostream");
+					break;
+				case FuId.StringWriterClass:
+					Include("sstream");
+					Write("std::ostringstream");
+					break;
+				case FuId.RegexClass:
+					Include("regex");
+					Write("std::regex");
+					break;
+				case FuId.MatchClass:
+					Include("regex");
+					Write("std::cmatch");
+					break;
+				case FuId.LockClass:
+					Include("mutex");
+					Write("std::recursive_mutex");
+					break;
+				default:
+					Write(klass.Class.Name);
+					break;
+				}
+			}
+			else if (klass.Class.Id == FuId.ArrayPtrClass) {
+				WriteType(klass.GetElementType(), false);
+				if (!(klass is FuReadWriteClassType))
+					Write(" const");
+			}
+			else {
+				string cppType;
+				switch (klass.Class.Id) {
+				case FuId.ArrayStorageClass:
+					cppType = "array";
+					break;
+				case FuId.ListClass:
+					cppType = "vector";
+					break;
+				case FuId.QueueClass:
+					cppType = "queue";
+					break;
+				case FuId.StackClass:
+					cppType = "stack";
+					break;
+				case FuId.HashSetClass:
+					cppType = "unordered_set";
+					break;
+				case FuId.SortedSetClass:
+					cppType = "set";
+					break;
+				case FuId.DictionaryClass:
+					cppType = "unordered_map";
+					break;
+				case FuId.SortedDictionaryClass:
+					cppType = "map";
+					break;
+				default:
+					NotSupported(type, klass.Class.Name);
+					cppType = "NOT_SUPPORTED";
+					break;
+				}
+				Include(cppType);
+				if (!(klass is FuReadWriteClassType))
+					Write("const ");
+				Write("std::");
+				Write(cppType);
+				WriteChar('<');
+				WriteType(klass.TypeArg0, false);
+				if (klass is FuArrayStorageType arrayStorage) {
+					Write(", ");
+					VisitLiteralLong(arrayStorage.Length);
+				}
+				else if (klass.Class.TypeParameterCount == 2) {
+					Write(", ");
+					WriteType(klass.GetValueType(), false);
+				}
+				WriteChar('>');
+			}
+			if (!(klass is FuStorageType))
+				Write(" *");
+			break;
+		default:
+			Write(type.Name);
+			break;
+		}
+	}
+
+	protected override void WriteNewArray!(FuType elementType, FuExpr lengthExpr, FuPriority parent)
+	{
+		Include("memory");
+		Write("std::make_shared<");
+		WriteType(elementType, false);
+		Write("[]>(");
+		lengthExpr.Accept(this, FuPriority.Argument);
+		WriteChar(')');
+	}
+
+	protected override void WriteNew!(FuReadWriteClassType klass, FuPriority parent)
+	{
+		Include("memory");
+		Write("std::make_shared<");
+		Write(klass.Class.Name);
+		Write(">()");
+	}
+
+	protected override void WriteStorageInit!(FuNamedValue def)
+	{
+	}
+
+	protected override void WriteVarInit!(FuNamedValue def)
+	{
+		if (def.Value != null && def.Type.Id == FuId.StringStorageType) {
+			WriteChar('{');
+			def.Value.Accept(this, FuPriority.Argument);
+			WriteChar('}');
+		}
+		else if (def.Type is FuArrayStorageType) {
+			switch (def.Value) {
+			case null:
+				break;
+			case FuLiteral literal when literal.IsDefaultValue():
+				Write(" {}");
+				break;
+			default:
+				assert false;
+			}
+		}
+		else
+			base.WriteVarInit(def);
+	}
+
+	static bool IsSharedPtr(FuExpr expr)
+	{
+		if (expr.Type is FuDynamicPtrType)
+			return true;
+		 return expr is FuSymbolReference symbol
+			&& symbol.Symbol.Parent is FuForeach loop
+			&& loop.Collection.Type.AsClassType().GetElementType() is FuDynamicPtrType;
+	}
+
+	protected override void WriteStaticCast!(FuType type, FuExpr expr)
+	{
+		if (type is FuDynamicPtrType dynamic) {
+			Write("std::static_pointer_cast<");
+			Write(dynamic.Class.Name);
+		}
+		else {
+			Write("static_cast<");
+			WriteType(type, false);
+		}
+		Write(">(");
+		if (expr.Type is FuStorageType) {
+			WriteChar('&');
+			expr.Accept(this, FuPriority.Primary);
+		}
+		else if (!(type is FuDynamicPtrType) && IsSharedPtr(expr))
+			WritePostfix(expr, ".get()");
+		else
+			GetStaticCastInner(type, expr).Accept(this, FuPriority.Argument);
+		WriteChar(')');
+	}
+
+	static bool NeedStringPtrData(FuExpr expr)
+	{
+		if (expr is FuCallExpr call && call.Method.Symbol.Id == FuId.EnvironmentGetEnvironmentVariable)
+			return false;
+		return expr.Type.Id == FuId.StringPtrType;
+	}
+
+	protected override void WriteEqual!(FuExpr left, FuExpr right, FuPriority parent, bool not)
+	{
+		if (NeedStringPtrData(left) && right.Type.Id == FuId.NullType) {
+			WritePostfix(left, ".data()");
+			Write(GetEqOp(not));
+			Write("nullptr");
+		}
+		else if (left.Type.Id == FuId.NullType && NeedStringPtrData(right)) {
+			Write("nullptr");
+			Write(GetEqOp(not));
+			WritePostfix(right, ".data()");
+		}
+		else
+			base.WriteEqual(left, right, parent, not);
+	}
+
+	static bool IsClassPtr(FuType type) => type is FuClassType ptr && !(type is FuStorageType) && ptr.Class.Id != FuId.StringClass && ptr.Class.Id != FuId.ArrayPtrClass;
+
+	static bool IsCppPtr(FuExpr expr)
+	{
+		if (IsClassPtr(expr.Type)) {
+			if (expr is FuSymbolReference symbol
+			 && symbol.Symbol.Parent is FuForeach loop
+			 && (symbol.Symbol == loop.GetVar() ? loop.Collection.Type.AsClassType().TypeArg0 : loop.Collection.Type.AsClassType().TypeArg1) is FuStorageType)
+				return false; // C++ reference
+			return true; // C++ pointer
+		}
+		return false;
+	}
+
+	protected override void WriteIndexingExpr!(FuBinaryExpr expr, FuPriority parent)
+	{
+		assert expr.Left.Type is FuClassType klass;
+		if (parent != FuPriority.Assign) {
+			switch (klass.Class.Id) {
+			case FuId.DictionaryClass:
+			case FuId.SortedDictionaryClass:
+			case FuId.OrderedDictionaryClass:
+				StartMethodCall(expr.Left);
+				Write("find(");
+				WriteStronglyCoerced(klass.GetKeyType(), expr.Right);
+				Write(")->second");
+				return;
+			default:
+				break;
+			}
+		}
+		if (IsClassPtr(expr.Left.Type)) {
+			Write("(*");
+			expr.Left.Accept(this, FuPriority.Primary);
+			WriteChar(')');
+		}
+		else
+			expr.Left.Accept(this, FuPriority.Primary);
+		WriteChar('[');
+		switch (klass.Class.Id) {
+		case FuId.ArrayPtrClass:
+		case FuId.ArrayStorageClass:
+		case FuId.ListClass:
+			expr.Right.Accept(this, FuPriority.Argument);
+			break;
+		default:
+			WriteStronglyCoerced(klass.GetKeyType(), expr.Right);
+			break;
+		}
+		WriteChar(']');
+	}
+
+	protected override void WriteMemberOp!(FuExpr left, FuSymbolReference? symbol)
+	{
+		if (symbol != null && symbol.Symbol is FuConst) // FIXME
+			Write("::");
+		else if (IsCppPtr(left))
+			Write("->");
+		else
+			WriteChar('.');
+	}
+
+	protected override void WriteEnumAsInt!(FuExpr expr, FuPriority parent)
+	{
+		Write("static_cast<int>(");
+		expr.Accept(this, FuPriority.Argument);
+		WriteChar(')');
+	}
+
+	void WriteCollectionObject!(FuExpr obj, FuPriority priority)
+	{
+		if (IsCppPtr(obj)) {
+			WriteChar('*');
+			obj.Accept(this, FuPriority.Primary);
+		}
+		else
+			obj.Accept(this, priority);
+	}
+
+	void WriteBeginEnd!(FuExpr obj)
+	{
+		StartMethodCall(obj);
+		Write("begin(), ");
+		StartMethodCall(obj); // FIXME: side effect
+		Write("end()");
+	}
+
+	void WritePtrRange!(FuExpr obj, FuExpr index, FuExpr count)
+	{
+		WriteArrayPtrAdd(obj, index);
+		Write(", ");
+		WriteArrayPtrAdd(obj, index); // FIXME: side effect
+		Write(" + ");
+		count.Accept(this, FuPriority.Mul);
+	}
+
+	void WriteNotRawStringLiteral!(FuExpr obj, FuPriority priority)
+	{
+		obj.Accept(this, priority);
+		if (obj is FuLiteralString) {
+			Include("string_view");
+			this.UsingStringViewLiterals = true;
+			Write("sv");
+		}
+	}
+
+	void WriteStringMethod!(FuExpr obj, string name, FuMethod method, List<FuExpr#> args)
+	{
+		WriteNotRawStringLiteral(obj, FuPriority.Primary);
+		WriteChar('.');
+		Write(name);
+		int c = GetOneAscii(args[0]);
+		if (c >= 0) {
+			WriteChar('(');
+			VisitLiteralChar(c);
+			WriteChar(')');
+		}
+		else
+			WriteArgsInParentheses(method, args);
+	}
+
+	void WriteAllAnyContains!(string function, FuExpr obj, List<FuExpr#> args)
+	{
+		Include("algorithm");
+		Write("std::");
+		Write(function);
+		WriteChar('(');
+		WriteBeginEnd(obj);
+		Write(", ");
+		args[0].Accept(this, FuPriority.Argument);
+		WriteChar(')');
+	}
+
+	void WriteCString!(FuExpr expr)
+	{
+		if (expr is FuLiteralString)
+			expr.Accept(this, FuPriority.Argument);
+		else
+			WritePostfix(expr, ".data()");
+	}
+
+	void WriteRegex!(List<FuExpr#> args, int argIndex)
+	{
+		Include("regex");
+		Write("std::regex(");
+		args[argIndex].Accept(this, FuPriority.Argument);
+		WriteRegexOptions(args, ", std::regex::ECMAScript | ", " | ", "", "std::regex::icase", "std::regex::multiline", "std::regex::NOT_SUPPORTED_singleline");
+		WriteChar(')');
+	}
+
+	void WriteWrite!(List<FuExpr#> args, bool newLine)
+	{
+		Include("iostream");
+		if (args.Count == 1) {
+			if (args[0] is FuInterpolatedString interpolated) {
+				bool uppercase = false;
+				bool hex = false;
+				int flt = 'G';
+				foreach (FuInterpolatedPart part in interpolated.Parts) {
+					switch (part.Format) {
+					case 'E':
+					case 'G':
+					case 'X':
+						if (!uppercase) {
+							Write(" << std::uppercase");
+							uppercase = true;
+						}
+						break;
+					case 'e':
+					case 'g':
+					case 'x':
+						if (uppercase) {
+							Write(" << std::nouppercase");
+							uppercase = false;
+						}
+						break;
+					default:
+						break;
+					}
+
+					switch (part.Format) {
+					case 'E':
+					case 'e':
+						if (flt != 'E') {
+							Write(" << std::scientific");
+							flt = 'E';
+						}
+						break;
+					case 'F':
+					case 'f':
+						if (flt != 'F') {
+							Write(" << std::fixed");
+							flt = 'F';
+						}
+						break;
+					case 'X':
+					case 'x':
+						if (!hex) {
+							Write(" << std::hex");
+							hex = true;
+						}
+						break;
+					default:
+						if (hex) {
+							Write(" << std::dec");
+							hex = false;
+						}
+						if (flt != 'G') {
+							Write(" << std::defaultfloat");
+							flt = 'G';
+						}
+						break;
+					}
+
+					if (part.Prefix.Length > 0) {
+						Write(" << ");
+						VisitLiteralString(part.Prefix);
+					}
+
+					Write(" << ");
+					part.Argument.Accept(this, FuPriority.Mul);
+				}
+
+				if (uppercase)
+					Write(" << std::nouppercase");
+				if (hex)
+					Write(" << std::dec");
+				if (flt != 'G')
+					Write(" << std::defaultfloat");
+				if (interpolated.Suffix.Length > 0) {
+					Write(" << ");
+					if (newLine) {
+						WriteStringLiteralWithNewLine(interpolated.Suffix);
+						return;
+					}
+					VisitLiteralString(interpolated.Suffix);
+				}
+			}
+			else {
+				Write(" << ");
+				if (newLine && args[0] is FuLiteralString literal) {
+					WriteStringLiteralWithNewLine(literal.Value);
+					return;
+				}
+				else if (args[0] is FuLiteralChar)
+					WriteCall("static_cast<int>", args[0]);
+				else
+					args[0].Accept(this, FuPriority.Mul);
+			}
+		}
+		if (newLine)
+			Write(" << '\\n'");
+	}
+
+	void WriteRegexArgument!(FuExpr expr)
+	{
+		if (expr.Type is FuDynamicPtrType)
+			expr.Accept(this, FuPriority.Argument);
+		else {
+			WriteChar('*');
+			expr.Accept(this, FuPriority.Primary);
+		}
+	}
+
+	protected override void WriteCallExpr!(FuExpr? obj, FuMethod method, List<FuExpr#> args, FuPriority parent)
+	{
+		switch (method.Id) {
+		case FuId.None:
+		case FuId.ClassToString:
+		case FuId.ListClear:
+		case FuId.StackPush:
+		case FuId.HashSetClear:
+		case FuId.HashSetContains:
+		case FuId.SortedSetClear:
+		case FuId.SortedSetContains:
+		case FuId.DictionaryClear:
+		case FuId.SortedDictionaryClear:
+			if (obj != null) {
+				if (IsReferenceTo(obj, FuId.BasePtr)) {
+					WriteName(method.Parent);
+					Write("::");
+				}
+				else {
+					obj.Accept(this, FuPriority.Primary);
+					if (method.CallType == FuCallType.Static)
+						Write("::");
+					else
+						WriteMemberOp(obj, null);
+				}
+			}
+			WriteName(method);
+			WriteArgsInParentheses(method, args);
+			break;
+		case FuId.EnumFromInt:
+			WriteStaticCast(method.Type, args[0]);
+			break;
+		case FuId.EnumHasFlag:
+			WriteEnumHasFlag(obj, args, parent);
+			break;
+		case FuId.IntTryParse:
+		case FuId.LongTryParse:
+			Include("cstdlib");
+			Write("[&] { char *ciend; ");
+			obj.Accept(this, FuPriority.Assign);
+			Write(" = std::strtol");
+			if (method.Id == FuId.LongTryParse)
+				WriteChar('l');
+			WriteChar('(');
+			WriteCString(args[0]);
+			Write(", &ciend");
+			WriteTryParseRadix(args);
+			Write("); return *ciend == '\\0'; }()"); // TODO: && *s != '\0'
+			break;
+		case FuId.DoubleTryParse:
+			Include("cstdlib");
+			Write("[&] { char *ciend; ");
+			obj.Accept(this, FuPriority.Assign);
+			Write(" = std::strtod(");
+			WriteCString(args[0]);
+			Write(", &ciend); return *ciend == '\\0'; }()"); // TODO: && *s != '\0'
+			break;
+		case FuId.StringContains:
+			if (parent > FuPriority.Equality)
+				WriteChar('(');
+			WriteStringMethod(obj, "find", method, args);
+			Write(" != std::string::npos");
+			if (parent > FuPriority.Equality)
+				WriteChar(')');
+			break;
+		case FuId.StringEndsWith:
+			WriteStringMethod(obj, "ends_with", method, args);
+			break;
+		case FuId.StringIndexOf:
+			Write("static_cast<int>(");
+			WriteStringMethod(obj, "find", method, args);
+			WriteChar(')');
+			break;
+		case FuId.StringLastIndexOf:
+			Write("static_cast<int>(");
+			WriteStringMethod(obj, "rfind", method, args);
+			WriteChar(')');
+			break;
+		case FuId.StringReplace:
+			this.StringReplace = true;
+			WriteCall("FuString_replace", obj, args[0], args[1]);
+			break;
+		case FuId.StringStartsWith:
+			WriteStringMethod(obj, "starts_with", method, args);
+			break;
+		case FuId.StringSubstring:
+			WriteStringMethod(obj, "substr", method, args);
+			break;
+		case FuId.ArrayBinarySearchAll:
+		case FuId.ArrayBinarySearchPart:
+			Include("algorithm");
+			if (parent > FuPriority.Add)
+				WriteChar('(');
+			Write("std::lower_bound(");
+			if (args.Count == 1)
+				WriteBeginEnd(obj);
+			else
+				WritePtrRange(obj, args[1], args[2]);
+			Write(", ");
+			args[0].Accept(this, FuPriority.Argument);
+			Write(") - ");
+			WriteArrayPtr(obj, FuPriority.Mul);
+			if (parent > FuPriority.Add)
+				WriteChar(')');
+			break;
+		case FuId.ArrayContains:
+		case FuId.ListContains:
+			if (parent > FuPriority.Equality)
+				WriteChar('(');
+			WriteAllAnyContains("find", obj, args);
+			Write(" != ");
+			StartMethodCall(obj); // FIXME: side effect
+			Write("end()");
+			if (parent > FuPriority.Equality)
+				WriteChar(')');
+			break;
+		case FuId.ArrayCopyTo:
+		case FuId.ListCopyTo:
+			Include("algorithm");
+			Write("std::copy_n(");
+			WriteArrayPtrAdd(obj, args[0]);
+			Write(", ");
+			args[3].Accept(this, FuPriority.Argument);
+			Write(", ");
+			WriteArrayPtrAdd(args[1], args[2]);
+			WriteChar(')');
+			break;
+		case FuId.ArrayFillAll:
+			StartMethodCall(obj);
+			Write("fill(");
+			WriteCoerced(obj.Type.AsClassType().GetElementType(), args[0], FuPriority.Argument);
+			WriteChar(')');
+			break;
+		case FuId.ArrayFillPart:
+			Include("algorithm");
+			Write("std::fill_n(");
+			WriteArrayPtrAdd(obj, args[1]);
+			Write(", ");
+			args[2].Accept(this, FuPriority.Argument);
+			Write(", ");
+			WriteCoerced(obj.Type.AsClassType().GetElementType(), args[0], FuPriority.Argument);
+			WriteChar(')');
+			break;
+		case FuId.ArraySortAll:
+		case FuId.ListSortAll:
+			Include("algorithm");
+			Write("std::sort(");
+			WriteBeginEnd(obj);
+			WriteChar(')');
+			break;
+		case FuId.ArraySortPart:
+		case FuId.ListSortPart:
+			Include("algorithm");
+			Write("std::sort(");
+			WritePtrRange(obj, args[0], args[1]);
+			WriteChar(')');
+			break;
+		case FuId.ListAdd:
+			StartMethodCall(obj);
+			if (args.Count == 0)
+				Write("emplace_back()");
+			else {
+				Write("push_back(");
+				WriteCoerced(obj.Type.AsClassType().GetElementType(), args[0], FuPriority.Argument);
+				WriteChar(')');
+			}
+			break;
+		case FuId.ListAddRange:
+			StartMethodCall(obj);
+			Write("insert(");
+			StartMethodCall(obj); // FIXME: side effect
+			Write("end(), ");
+			WriteBeginEnd(args[0]);
+			WriteChar(')');
+			break;
+		case FuId.ListAll:
+			WriteAllAnyContains("all_of", obj, args);
+			break;
+		case FuId.ListAny:
+			Include("algorithm");
+			WriteAllAnyContains("any_of", obj, args);
+			break;
+		case FuId.ListIndexOf:
+			{
+				FuType elementType = obj.Type.AsClassType().GetElementType();
+				Write("[](const ");
+				WriteCollectionType("vector", elementType);
+				Write(" &v, ");
+				WriteType(elementType, false);
+				Include("algorithm");
+				Write(" value) { auto i = std::find(v.begin(), v.end(), value); return i == v.end() ? -1 : i - v.begin(); }(");
+				WriteCollectionObject(obj, FuPriority.Argument);
+				Write(", ");
+				WriteCoerced(elementType, args[0], FuPriority.Argument);
+				WriteChar(')');
+			}
+			break;
+		case FuId.ListInsert:
+			StartMethodCall(obj);
+			if (args.Count == 1) {
+				Write("emplace(");
+				WriteArrayPtrAdd(obj, args[0]); // FIXME: side effect
+			}
+			else {
+				Write("insert(");
+				WriteArrayPtrAdd(obj, args[0]); // FIXME: side effect
+				Write(", ");
+				WriteCoerced(obj.Type.AsClassType().GetElementType(), args[1], FuPriority.Argument);
+			}
+			WriteChar(')');
+			break;
+		case FuId.ListLast:
+			StartMethodCall(obj);
+			Write("back()");
+			break;
+		case FuId.ListRemoveAt:
+			StartMethodCall(obj);
+			Write("erase(");
+			WriteArrayPtrAdd(obj, args[0]); // FIXME: side effect
+			WriteChar(')');
+			break;
+		case FuId.ListRemoveRange:
+			StartMethodCall(obj);
+			Write("erase(");
+			WritePtrRange(obj, args[0], args[1]); // FIXME: side effect
+			WriteChar(')');
+			break;
+		case FuId.QueueClear:
+		case FuId.StackClear:
+			WriteCollectionObject(obj, FuPriority.Assign);
+			Write(" = {}");
+			break;
+		case FuId.QueueDequeue:
+			if (parent == FuPriority.Statement) {
+				StartMethodCall(obj);
+				Write("pop()");
+			}
+			else {
+				// :-)
+				FuType elementType = obj.Type.AsClassType().GetElementType();
+				Write("[](");
+				WriteCollectionType("queue", elementType);
+				Write(" &q) { ");
+				WriteType(elementType, false);
+				Write(" front = q.front(); q.pop(); return front; }(");
+				WriteCollectionObject(obj, FuPriority.Argument);
+				WriteChar(')');
+			}
+			break;
+		case FuId.QueueEnqueue:
+			WriteMethodCall(obj, "push", args[0]);
+			break;
+		case FuId.QueuePeek:
+			StartMethodCall(obj);
+			Write("front()");
+			break;
+		case FuId.StackPeek:
+			StartMethodCall(obj);
+			Write("top()");
+			break;
+		case FuId.StackPop:
+			if (parent == FuPriority.Statement) {
+				StartMethodCall(obj);
+				Write("pop()");
+			}
+			else {
+				// :-)
+				FuType elementType = obj.Type.AsClassType().GetElementType();
+				Write("[](");
+				WriteCollectionType("stack", elementType);
+				Write(" &s) { ");
+				WriteType(elementType, false);
+				Write(" top = s.top(); s.pop(); return top; }(");
+				WriteCollectionObject(obj, FuPriority.Argument);
+				WriteChar(')');
+			}
+			break;
+		case FuId.HashSetAdd:
+		case FuId.SortedSetAdd:
+			WriteMethodCall(obj, obj.Type.AsClassType().GetElementType().Id == FuId.StringStorageType && args[0].Type.Id == FuId.StringPtrType ? "emplace" : "insert", args[0]);
+			break;
+		case FuId.HashSetRemove:
+		case FuId.SortedSetRemove:
+		case FuId.DictionaryRemove:
+		case FuId.SortedDictionaryRemove:
+			WriteMethodCall(obj, "erase", args[0]);
+			break;
+		case FuId.DictionaryAdd:
+			WriteIndexing(obj, args[0]);
+			break;
+		case FuId.DictionaryContainsKey:
+		case FuId.SortedDictionaryContainsKey:
+			if (parent > FuPriority.Equality)
+				WriteChar('(');
+			StartMethodCall(obj);
+			Write("count(");
+			WriteStronglyCoerced(obj.Type.AsClassType().GetKeyType(), args[0]);
+			Write(") != 0");
+			if (parent > FuPriority.Equality)
+				WriteChar(')');
+			break;
+		case FuId.TextWriterWrite:
+			WriteCollectionObject(obj, FuPriority.Shift);
+			WriteWrite(args, false);
+			break;
+		case FuId.TextWriterWriteChar:
+			WriteCollectionObject(obj, FuPriority.Shift);
+			Write(" << ");
+			if (args[0] is FuLiteralChar literalChar && literalChar.Value < 127) // TODO: issue error for non-ASCII character
+				args[0].Accept(this, FuPriority.Mul);
+			else
+				WriteCall("static_cast<char>", args[0]);
+			break;
+		case FuId.TextWriterWriteCodePoint:
+			if (args[0] is FuLiteralChar literalChar2 && literalChar2.Value < 127) {
+				WriteCollectionObject(obj, FuPriority.Shift);
+				Write(" << ");
+				args[0].Accept(this, FuPriority.Mul);
+			}
+			else {
+				Write("if ("); // FIXME: parent if
+				args[0].Accept(this, FuPriority.Rel);
+				WriteLine(" < 0x80)");
+				WriteChar('\t');
+				WriteCollectionObject(obj, FuPriority.Shift);
+				Write(" << ");
+				WriteCall("static_cast<char>", args[0]); // FIXME: side effect
+				WriteCharLine(';');
+				Write("else if (");
+				args[0].Accept(this, FuPriority.Rel); // FIXME: side effect
+				WriteLine(" < 0x800)");
+				WriteChar('\t');
+				WriteCollectionObject(obj, FuPriority.Shift);
+				Write(" << static_cast<char>(0xc0 | ");
+				args[0].Accept(this, FuPriority.Shift); // FIXME: side effect
+				Write(" >> 6) << static_cast<char>(0x80 | (");
+				args[0].Accept(this, FuPriority.And); // FIXME: side effect
+				WriteLine(" & 0x3f));");
+				Write("else if (");
+				args[0].Accept(this, FuPriority.Rel); // FIXME: side effect
+				WriteLine(" < 0x10000)");
+				WriteChar('\t');
+				WriteCollectionObject(obj, FuPriority.Shift);
+				Write(" << static_cast<char>(0xe0 | ");
+				args[0].Accept(this, FuPriority.Shift); // FIXME: side effect
+				Write(" >> 12) << static_cast<char>(0x80 | (");
+				args[0].Accept(this, FuPriority.Shift); // FIXME: side effect
+				Write(" >> 6 & 0x3f)) << static_cast<char>(0x80 | (");
+				args[0].Accept(this, FuPriority.And); // FIXME: side effect
+				WriteLine(" & 0x3f));");
+				WriteLine("else");
+				WriteChar('\t');
+				WriteCollectionObject(obj, FuPriority.Shift);
+				Write(" << static_cast<char>(0xf0 | ");
+				args[0].Accept(this, FuPriority.Shift); // FIXME: side effect
+				Write(" >> 18) << static_cast<char>(0x80 | (");
+				args[0].Accept(this, FuPriority.Shift); // FIXME: side effect
+				Write(" >> 12 & 0x3f)) << static_cast<char>(0x80 | (");
+				args[0].Accept(this, FuPriority.Shift); // FIXME: side effect
+				Write(" >> 6 & 0x3f)) << static_cast<char>(0x80 | (");
+				args[0].Accept(this, FuPriority.And); // FIXME: side effect
+				Write(" & 0x3f))");
+			}
+			break;
+		case FuId.TextWriterWriteLine:
+			WriteCollectionObject(obj, FuPriority.Shift);
+			WriteWrite(args, true);
+			break;
+		case FuId.StringWriterClear:
+			Include("string");
+			StartMethodCall(obj);
+			Write("str(std::string())");
+			break;
+		case FuId.ConsoleWrite:
+			Write("std::cout");
+			WriteWrite(args, false);
+			break;
+		case FuId.ConsoleWriteLine:
+			Write("std::cout");
+			WriteWrite(args, true);
+			break;
+		case FuId.StringWriterToString:
+			StartMethodCall(obj);
+			Write("str()"); // TODO: C++20 view()
+			break;
+		case FuId.UTF8GetByteCount:
+			if (args[0] is FuLiteral) {
+				if (parent > FuPriority.Add)
+					WriteChar('(');
+				Write("sizeof(");
+				args[0].Accept(this, FuPriority.Argument);
+				Write(") - 1");
+				if (parent > FuPriority.Add)
+					WriteChar(')');
+			}
+			else
+				WriteStringLength(args[0]);
+			break;
+		case FuId.UTF8GetBytes:
+			if (args[0] is FuLiteral) {
+				Include("algorithm");
+				Write("std::copy_n(");
+				args[0].Accept(this, FuPriority.Argument);
+				Write(", sizeof(");
+				args[0].Accept(this, FuPriority.Argument);
+				Write(") - 1, ");
+				WriteArrayPtrAdd(args[1], args[2]);
+				WriteChar(')');
+			}
+			else {
+				WritePostfix(args[0], ".copy(reinterpret_cast<char *>("); // cast pointer signedness
+				WriteArrayPtrAdd(args[1], args[2]);
+				Write("), ");
+				WritePostfix(args[0], ".size())"); // FIXME: side effect
+			}
+			break;
+		case FuId.UTF8GetString:
+			Include("string_view");
+			Write("std::string_view(reinterpret_cast<const char *>(");
+			WriteArrayPtrAdd(args[0], args[1]);
+			Write("), ");
+			args[2].Accept(this, FuPriority.Argument);
+			WriteChar(')');
+			break;
+		case FuId.EnvironmentGetEnvironmentVariable:
+			Include("cstdlib");
+			Write("std::getenv(");
+			WriteCString(args[0]);
+			WriteChar(')');
+			break;
+		case FuId.RegexCompile:
+			WriteRegex(args, 0);
+			break;
+		case FuId.RegexIsMatchStr:
+		case FuId.RegexIsMatchRegex:
+		case FuId.MatchFindStr:
+		case FuId.MatchFindRegex:
+			Write("std::regex_search(");
+			if (args[0].Type.Id == FuId.StringPtrType && !(args[0] is FuLiteral))
+				WriteBeginEnd(args[0]);
+			else
+				args[0].Accept(this, FuPriority.Argument);
+			if (method.Id == FuId.MatchFindStr || method.Id == FuId.MatchFindRegex) {
+				Write(", ");
+				obj.Accept(this, FuPriority.Argument);
+			}
+			Write(", ");
+			if (method.Id == FuId.RegexIsMatchRegex)
+				WriteRegexArgument(obj);
+			else if (method.Id == FuId.MatchFindRegex)
+				WriteRegexArgument(args[1]);
+			else
+				WriteRegex(args, 1);
+			WriteChar(')');
+			break;
+		case FuId.MatchGetCapture:
+			StartMethodCall(obj);
+			WriteCall("str", args[0]);
+			break;
+		case FuId.MathMethod:
+		case FuId.MathAbs:
+		case FuId.MathIsFinite:
+		case FuId.MathIsNaN:
+		case FuId.MathLog2:
+		case FuId.MathRound:
+			IncludeMath();
+			Write("std::");
+			WriteLowercase(method.Name);
+			WriteArgsInParentheses(method, args);
+			break;
+		case FuId.MathCeiling:
+			IncludeMath();
+			WriteCall("std::ceil", args[0]);
+			break;
+		case FuId.MathClamp:
+			Include("algorithm");
+			WriteCall("std::clamp", args[0], args[1], args[2]);
+			break;
+		case FuId.MathFusedMultiplyAdd:
+			IncludeMath();
+			WriteCall("std::fma", args[0], args[1], args[2]);
+			break;
+		case FuId.MathIsInfinity:
+			IncludeMath();
+			WriteCall("std::isinf", args[0]);
+			break;
+		case FuId.MathMaxInt:
+		case FuId.MathMaxDouble: // TODO: <cmath> fmax ?
+			Include("algorithm");
+			WriteCall("std::max", args[0], args[1]);
+			break;
+		case FuId.MathMinInt:
+		case FuId.MathMinDouble: // TODO: <cmath> fmin ?
+			Include("algorithm");
+			WriteCall("std::min", args[0], args[1]);
+			break;
+		case FuId.MathTruncate:
+			IncludeMath();
+			WriteCall("std::trunc", args[0]);
+			break;
+		default:
+			NotSupported(obj, method.Name);
+			break;
+		}
+	}
+
+	protected override void WriteResource!(string name, int length)
+	{
+		Write("FuResource::");
+		WriteResourceName(name);
+	}
+
+	protected override void WriteArrayPtr!(FuExpr expr, FuPriority parent)
+	{
+		switch (expr.Type) {
+		case FuArrayStorageType _:
+		case FuStringType _:
+			WritePostfix(expr, ".data()");
+			break;
+		case FuDynamicPtrType _:
+			WritePostfix(expr, ".get()");
+			break;
+		case FuClassType klass when klass.Class.Id == FuId.ListClass:
+			StartMethodCall(expr);
+			Write("begin()");
+			break;
+		default:
+			expr.Accept(this, parent);
+			break;
+		}
+	}
+
+	protected override void WriteCoercedInternal!(FuType type, FuExpr expr, FuPriority parent)
+	{
+		if (type is FuClassType klass && !(klass is FuDynamicPtrType) && !(klass is FuStorageType)) {
+			if (klass.Class.Id == FuId.StringClass) {
+				if (expr.Type.Id == FuId.NullType) {
+					Include("string_view");
+					Write("std::string_view()");
+				}
+				else
+					expr.Accept(this, parent);
+				return;
+			}
+			if (klass.Class.Id == FuId.ArrayPtrClass) {
+				WriteArrayPtr(expr, parent);
+				return;
+			}
+			if (IsSharedPtr(expr)) {
+				if (klass.Class.Id == FuId.RegexClass) {
+					WriteChar('&');
+					expr.Accept(this, FuPriority.Primary);
+				}
+				else
+					WritePostfix(expr, ".get()");
+				return;
+			}
+			if (expr.Type is FuClassType && !IsCppPtr(expr)) {
+				WriteChar('&');
+				if (expr is FuCallExpr) {
+					Write("static_cast<");
+					if (!(klass is FuReadWriteClassType))
+						Write("const ");
+					WriteName(klass.Class);
+					Write(" &>(");
+					expr.Accept(this, FuPriority.Argument);
+					WriteChar(')');
+				}
+				else
+					expr.Accept(this, FuPriority.Primary);
+				return;
+			}
+		}
+		base.WriteCoercedInternal(type, expr, parent);
+	}
+
+	protected override void WriteSelectValues!(FuType type, FuSelectExpr expr)
+	{
+		if (expr.OnTrue.Type is FuClassType trueClass && expr.OnFalse.Type is FuClassType falseClass
+			&& !trueClass.Class.IsSameOrBaseOf(falseClass.Class) && !falseClass.Class.IsSameOrBaseOf(trueClass.Class)) {
+			WriteStaticCast(type, expr.OnTrue);
+			Write(" : ");
+			WriteStaticCast(type, expr.OnFalse);
+		}
+		else
+			base.WriteSelectValues(type, expr);
+	}
+
+	protected override void WriteStringLength!(FuExpr expr)
+	{
+		Write("std::ssize(");
+		WriteNotRawStringLiteral(expr, FuPriority.Argument);
+		WriteChar(')');
+	}
+
+	void WriteMatchProperty!(FuSymbolReference expr, string name)
+	{
+		StartMethodCall(expr.Left);
+		Write(name);
+		Write("()");
+	}
+
+	internal override void VisitSymbolReference!(FuSymbolReference expr, FuPriority parent)
+	{
+		switch (expr.Symbol.Id) {
+		case FuId.ConsoleError:
+			Write("std::cerr");
+			break;
+		case FuId.ListCount:
+		case FuId.QueueCount:
+		case FuId.StackCount:
+		case FuId.HashSetCount:
+		case FuId.SortedSetCount:
+		case FuId.DictionaryCount:
+		case FuId.SortedDictionaryCount:
+		case FuId.OrderedDictionaryCount:
+			Write("std::ssize(");
+			WriteCollectionObject(expr.Left, FuPriority.Argument);
+			WriteChar(')');
+			break;
+		case FuId.MatchStart:
+			WriteMatchProperty(expr, "position");
+			break;
+		case FuId.MatchEnd:
+			if (parent > FuPriority.Add)
+				WriteChar('(');
+			WriteMatchProperty(expr, "position");
+			Write(" + ");
+			WriteMatchProperty(expr, "length"); // FIXME: side effect
+			if (parent > FuPriority.Add)
+				WriteChar(')');
+			break;
+		case FuId.MatchLength:
+			WriteMatchProperty(expr, "length");
+			break;
+		case FuId.MatchValue:
+			WriteMatchProperty(expr, "str");
+			break;
+		default:
+			base.VisitSymbolReference(expr, parent);
+			break;
+		}
+	}
+
+	void WriteGtRawPtr!(FuExpr expr)
+	{
+		Write(">(");
+		if (IsSharedPtr(expr))
+			WritePostfix(expr, ".get()");
+		else
+			expr.Accept(this, FuPriority.Argument);
+		WriteChar(')');
+	}
+
+	void WriteIsVar!(FuExpr expr, FuVar def, FuPriority parent)
+	{
+		if (def.Name != "_") {
+			if (parent > FuPriority.Assign)
+				WriteChar('(');
+			WriteName(def);
+			Write(" = ");
+		}
+		if (def.Type is FuDynamicPtrType dynamic) {
+			Write("std::dynamic_pointer_cast<");
+			Write(dynamic.Class.Name);
+			WriteCall(">", expr);
+		}
+		else {
+			Write("dynamic_cast<");
+			WriteType(def.Type, true);
+			WriteGtRawPtr(expr);
+		}
+		if (def.Name != "_" && parent > FuPriority.Assign)
+			WriteChar(')');
+	}
+
+	internal override void VisitBinaryExpr!(FuBinaryExpr expr, FuPriority parent)
+	{
+		switch (expr.Op) {
+		case FuToken.Plus:
+			if (expr.Type.Id == FuId.StringStorageType) {
+				if (parent > FuPriority.Add)
+					WriteChar('(');
+				// https://stackoverflow.com/questions/44636549/why-is-there-no-support-for-concatenating-stdstring-and-stdstring-view
+				WriteStronglyCoerced(expr.Type, expr.Left);
+				Write(" + ");
+				WriteStronglyCoerced(expr.Type, expr.Right);
+				if (parent > FuPriority.Add)
+					WriteChar(')');
+				return;
+			}
+			break;
+		case FuToken.Equal:
+		case FuToken.NotEqual:
+		case FuToken.Greater:
+			FuExpr? str = IsStringEmpty(expr);
+			if (str != null) {
+				if (expr.Op != FuToken.Equal)
+					WriteChar('!');
+				WritePostfix(str, ".empty()");
+				return;
+			}
+			break;
+		case FuToken.Assign:
+			FuExpr? length = IsTrimSubstring(expr);
+			if (length != null && expr.Left.Type.Id == FuId.StringStorageType && parent == FuPriority.Statement) {
+				WriteMethodCall(expr.Left, "resize", length);
+				return;
+			}
+			break;
+		case FuToken.Is:
+			switch (expr.Right) {
+			case FuSymbolReference symbol:
+				if (parent >= FuPriority.Or && parent <= FuPriority.Mul)
+					Write("!!");
+				Write("dynamic_cast<const ");
+				Write(symbol.Symbol.Name);
+				Write(" *");
+				WriteGtRawPtr(expr.Left);
+				return;
+			case FuVar def:
+				WriteIsVar(expr.Left, def, parent);
+				return;
+			default:
+				assert false;
+			}
+		default:
+			break;
+		}
+		base.VisitBinaryExpr(expr, parent);
+	}
+
+	internal override void VisitLambdaExpr!(FuLambdaExpr expr)
+	{
+		Write("[](const ");
+		WriteType(expr.First.Type, false);
+		Write(" &");
+		WriteName(expr.First);
+		Write(") { ");
+		WriteTemporaries(expr.Body);
+		Write("return ");
+		expr.Body.Accept(this, FuPriority.Argument);
+		Write("; }");
+	}
+
+	protected override void WriteUnreachable!(FuAssert statement)
+	{
+		Include("cstdlib");
+		Write("std::");
+		base.WriteUnreachable(statement);
+	}
+
+	protected override void WriteConst!(FuConst konst)
+	{
+		Write("static constexpr ");
+		WriteTypeAndName(konst);
+		Write(" = ");
+		konst.Value.Accept(this, FuPriority.Argument);
+		WriteCharLine(';');
+	}
+
+	internal override void VisitForeach!(FuForeach statement)
+	{
+		FuVar element = statement.GetVar();
+		Write("for (");
+		if (statement.Count() == 2) {
+			Write("const auto &[");
+			WriteCamelCaseNotKeyword(element.Name);
+			Write(", ");
+			WriteCamelCaseNotKeyword(statement.GetValueVar().Name);
+			WriteChar(']');
+		}
+		else {
+			switch (statement.Collection.Type.AsClassType().GetElementType()) {
+			case FuStorageType storage:
+				if (!(element.Type is FuReadWriteClassType))
+					Write("const ");
+				Write(storage.Class.Name);
+				Write(" &");
+				WriteCamelCaseNotKeyword(element.Name);
+				break;
+			case FuDynamicPtrType dynamic:
+				Write("const ");
+				WriteType(dynamic, true);
+				Write(" &");
+				WriteCamelCaseNotKeyword(element.Name);
+				break;
+			default:
+				WriteTypeAndName(element);
+				break;
+			}
+		}
+		Write(" : ");
+		if (statement.Collection.Type is FuStringType)
+			WriteNotRawStringLiteral(statement.Collection, FuPriority.Argument);
+		else
+			WriteCollectionObject(statement.Collection, FuPriority.Argument);
+		WriteChar(')');
+		WriteChild(statement.Body);
+	}
+
+	protected override bool EmbedIfWhileIsVar!(FuExpr expr, bool write)
+	{
+		if (expr is FuBinaryExpr binary && binary.Op == FuToken.Is && binary.Right is FuVar def) {
+			if (write)
+				WriteType(def.Type, true);
+			return true;
+		}
+		return false;
+	}
+
+	internal override void VisitLock!(FuLock statement)
+	{
+		OpenBlock();
+		Write("const std::lock_guard<std::recursive_mutex> lock(");
+		statement.Lock.Accept(this, FuPriority.Argument);
+		WriteLine(");");
+		FlattenBlock(statement.Body);
+		CloseBlock();
+	}
+
+	// Handle string -> string() for return values and collection indexing.
+	// Not needed for initialization or assignment.
+	protected override void WriteStronglyCoerced!(FuType type, FuExpr expr)
+	{
+		if (type.Id == FuId.StringStorageType
+		 && expr.Type.Id == FuId.StringPtrType
+		 && !(expr is FuLiteral)) {
+			Write("std::string(");
+			expr.Accept(this, FuPriority.Argument);
+			WriteChar(')');
+		}
+		else {
+			FuCallExpr? call = IsStringSubstring(expr);
+			if (call != null
+			 && type.Id == FuId.StringStorageType
+			 && GetStringSubstringPtr(call).Type.Id != FuId.StringStorageType) {
+				Write("std::string(");
+				bool cast = IsUTF8GetString(call);
+				if (cast)
+					Write("reinterpret_cast<const char *>(");
+				WriteStringPtrAdd(call);
+				if (cast)
+					WriteChar(')');
+				Write(", ");
+				GetStringSubstringLength(call).Accept(this, FuPriority.Argument);
+				WriteChar(')');
+			}
+			else
+				base.WriteStronglyCoerced(type, expr);
+		}
+	}
+
+	protected override void WriteSwitchCaseCond!(FuSwitch statement, FuExpr value, FuPriority parent)
+	{
+		if (value is FuVar def) {
+			if (parent == FuPriority.Argument && def.Name != "_")
+				WriteType(def.Type, true);
+			WriteIsVar(statement.Value, def, parent); // FIXME: side effect in every if
+		}
+		else
+			base.WriteSwitchCaseCond(statement, value, parent);
+	}
+
+	static bool IsIsVar(FuExpr expr) => expr is FuBinaryExpr binary && binary.Op == FuToken.Is && binary.Right is FuVar;
+
+	bool HasVariables(FuStatement statement)
+	{
+		switch (statement) {
+		case FuVar _:
+			return true;
+		case FuAssert asrt:
+			return IsIsVar(asrt.Cond);
+		case FuBlock _:
+		case FuBreak _:
+		case FuConst _:
+		case FuContinue _:
+		case FuLock _:
+		case FuNative _:
+		case FuThrow _:
+			return false;
+		case FuIf ifStatement:
+			return HasTemporaries(ifStatement.Cond) && !IsIsVar(ifStatement.Cond);
+		case FuLoop loop:
+			return loop.Cond != null && HasTemporaries(loop.Cond);
+		case FuReturn ret:
+			return ret.Value != null && HasTemporaries(ret.Value);
+		case FuSwitch switch_:
+			return HasTemporaries(switch_.Value);
+		case FuExpr expr:
+			return HasTemporaries(expr);
+		default:
+			assert false;
+		}
+	}
+
+	protected override void WriteSwitchCaseBody!(List<FuStatement#> statements)
+	{
+		bool block = false;
+		foreach (FuStatement statement in statements) {
+			if (!block && HasVariables(statement)) {
+				OpenBlock();
+				block = true;
+			}
+			statement.AcceptStatement(this);
+		}
+		if (block)
+			CloseBlock();
+	}
+
+	internal override void VisitSwitch!(FuSwitch statement)
+	{
+		if (statement.IsTypeMatching())
+			WriteSwitchAsIfsWithGoto(statement);
+		else
+			base.VisitSwitch(statement);
+	}
+
+	internal override void VisitThrow!(FuThrow statement)
+	{
+		Include("exception");
+		WriteLine("throw std::exception();");
+		// TODO: statement.Message.Accept(this, FuPriority.Argument);
+	}
+
+	void OpenNamespace!()
+	{
+		if (this.Namespace.Length == 0)
+			return;
+		WriteNewLine();
+		Write("namespace ");
+		WriteLine(this.Namespace);
+		WriteCharLine('{');
+	}
+
+	void CloseNamespace!()
+	{
+		if (this.Namespace.Length != 0)
+			WriteCharLine('}');
+	}
+
+	protected override void WriteEnum!(FuEnum enu)
+	{
+		WriteNewLine();
+		WriteDoc(enu.Documentation);
+		Write("enum class ");
+		WriteLine(enu.Name);
+		OpenBlock();
+		enu.AcceptValues(this);
+		WriteNewLine();
+		this.Indent--;
+		WriteLine("};");
+		if (enu is FuEnumFlags) {
+			Include("type_traits");
+			this.HasEnumFlags = true;
+			Write("FU_ENUM_FLAG_OPERATORS(");
+			Write(enu.Name);
+			WriteCharLine(')');
+		}
+	}
+
+	static FuVisibility GetConstructorVisibility(FuClass klass)
+	{
+		switch (klass.CallType) {
+		case FuCallType.Static:
+			return FuVisibility.Private;
+		case FuCallType.Abstract:
+			return FuVisibility.Protected;
+		default:
+			return FuVisibility.Public;
+		}
+	}
+
+	static bool HasMembersOfVisibility(FuClass klass, FuVisibility visibility)
+	{
+		for (FuSymbol? symbol = klass.First; symbol != null; symbol = symbol.Next) {
+			if (symbol is FuMember member && member.Visibility == visibility)
+				return true;
+		}
+		return false;
+	}
+
+	protected override void WriteField!(FuField field)
+	{
+		WriteDoc(field.Documentation);
+		WriteVar(field);
+		WriteCharLine(';');
+	}
+
+	void WriteParametersAndConst!(FuMethod method, bool defaultArguments)
+	{
+		WriteParameters(method, defaultArguments);
+		if (method.CallType != FuCallType.Static && !method.IsMutator)
+			Write(" const");
+	}
+
+	void WriteDeclarations!(FuClass klass, FuVisibility visibility, string visibilityKeyword)
+	{
+		bool constructor = GetConstructorVisibility(klass) == visibility;
+		bool destructor = visibility == FuVisibility.Public && (klass.HasSubclasses || klass.AddsVirtualMethods());
+		if (!constructor && !destructor && !HasMembersOfVisibility(klass, visibility))
+			return;
+
+		Write(visibilityKeyword);
+		WriteCharLine(':');
+		this.Indent++;
+
+		if (constructor) {
+			if (klass.Constructor != null)
+				WriteDoc(klass.Constructor.Documentation);
+			Write(klass.Name);
+			Write("()");
+			if (klass.CallType == FuCallType.Static)
+				Write(" = delete");
+			else if (!NeedsConstructor(klass))
+				Write(" = default");
+			WriteCharLine(';');
+		}
+
+		if (destructor) {
+			Write("virtual ~");
+			Write(klass.Name);
+			WriteLine("() = default;");
+		}
+
+		for (FuSymbol? symbol = klass.First; symbol != null; symbol = symbol.Next) {
+			if (!(symbol is FuMember member) || member.Visibility != visibility)
+				continue;
+			switch (member) {
+			case FuConst konst:
+				WriteDoc(konst.Documentation);
+				WriteConst(konst);
+				break;
+			case FuField field:
+				WriteField(field);
+				break;
+			case FuMethod method:
+				WriteMethodDoc(method);
+				switch (method.CallType) {
+				case FuCallType.Static:
+					Write("static ");
+					break;
+				case FuCallType.Abstract:
+				case FuCallType.Virtual:
+					Write("virtual ");
+					break;
+				default:
+					break;
+				}
+				WriteTypeAndName(method);
+				WriteParametersAndConst(method, true);
+				switch (method.CallType) {
+				case FuCallType.Abstract:
+					Write(" = 0");
+					break;
+				case FuCallType.Override:
+					Write(" override");
+					break;
+				case FuCallType.Sealed:
+					Write(" final");
+					break;
+				default:
+					break;
+				}
+				WriteCharLine(';');
+				break;
+			default:
+				assert false;
+			}
+		}
+
+		this.Indent--;
+	}
+
+	protected override void WriteClassInternal!(FuClass klass)
+	{
+		WriteNewLine();
+		WriteDoc(klass.Documentation);
+		OpenClass(klass, klass.CallType == FuCallType.Sealed ? " final" : "", " : public ");
+		this.Indent--;
+		WriteDeclarations(klass, FuVisibility.Public, "public");
+		WriteDeclarations(klass, FuVisibility.Protected, "protected");
+		WriteDeclarations(klass, FuVisibility.Internal, "public");
+		WriteDeclarations(klass, FuVisibility.Private, "private");
+		WriteLine("};");
+	}
+
+	void WriteConstructor!(FuClass klass)
+	{
+		if (!NeedsConstructor(klass))
+			return;
+		this.SwitchesWithGoto.Clear();
+		Write(klass.Name);
+		Write("::");
+		Write(klass.Name);
+		WriteLine("()");
+		OpenBlock();
+		WriteConstructorBody(klass);
+		CloseBlock();
+	}
+
+	protected override void WriteMethod!(FuMethod method)
+	{
+		if (method.CallType == FuCallType.Abstract)
+			return;
+		this.SwitchesWithGoto.Clear();
+		WriteNewLine();
+		WriteType(method.Type, true);
+		WriteChar(' ');
+		Write(method.Parent.Name);
+		Write("::");
+		WriteCamelCaseNotKeyword(method.Name);
+		WriteParametersAndConst(method, false);
+		WriteBody(method);
+	}
+
+	void WriteResources!(SortedDictionary<string(), List<byte>()> resources, bool define)
+	{
+		if (resources.Count == 0)
+			return;
+		WriteNewLine();
+		WriteLine("namespace");
+		OpenBlock();
+		WriteLine("namespace FuResource");
+		OpenBlock();
+		foreach ((string name, List<byte> content) in resources) {
+			if (!define)
+				Write("extern ");
+			Include("array");
+			Include("cstdint");
+			Write("const std::array<uint8_t, ");
+			VisitLiteralLong(content.Count);
+			Write("> ");
+			WriteResourceName(name);
+			if (define) {
+				WriteLine(" = {");
+				WriteChar('\t');
+				WriteBytes(content);
+				Write(" }");
+			}
+			WriteCharLine(';');
+		}
+		CloseBlock();
+		CloseBlock();
+	}
+
+	public override void WriteProgram!(FuProgram program)
+	{
+		this.WrittenClasses.Clear();
+		this.InHeaderFile = true;
+		this.UsingStringViewLiterals = false;
+		this.HasEnumFlags = false;
+		this.StringReplace = false;
+		OpenStringWriter();
+		OpenNamespace();
+		WriteRegexOptionsEnum(program);
+		for (FuSymbol? type = program.First; type != null; type = type.Next) {
+			if (type is FuEnum enu)
+				WriteEnum(enu);
+			else {
+				Write("class ");
+				Write(type.Name);
+				WriteCharLine(';');
+			}
+		}
+		foreach (FuClass klass in program.Classes)
+			WriteClass(klass, program);
+		CloseNamespace();
+
+		CreateHeaderFile(".hpp");
+		if (this.HasEnumFlags) {
+			WriteLine("#define FU_ENUM_FLAG_OPERATORS(T) \\");
+			WriteLine("\tinline constexpr T operator~(T a) { return static_cast<T>(~static_cast<std::underlying_type_t<T>>(a)); } \\");
+			WriteLine("\tinline constexpr T operator&(T a, T b) { return static_cast<T>(static_cast<std::underlying_type_t<T>>(a) & static_cast<std::underlying_type_t<T>>(b)); } \\");
+			WriteLine("\tinline constexpr T operator|(T a, T b) { return static_cast<T>(static_cast<std::underlying_type_t<T>>(a) | static_cast<std::underlying_type_t<T>>(b)); } \\");
+			WriteLine("\tinline constexpr T operator^(T a, T b) { return static_cast<T>(static_cast<std::underlying_type_t<T>>(a) ^ static_cast<std::underlying_type_t<T>>(b)); } \\");
+			WriteLine("\tinline constexpr T &operator&=(T &a, T b) { return (a = a & b); } \\");
+			WriteLine("\tinline constexpr T &operator|=(T &a, T b) { return (a = a | b); } \\");
+			WriteLine("\tinline constexpr T &operator^=(T &a, T b) { return (a = a ^ b); }");
+		}
+		CloseStringWriter();
+		CloseFile();
+
+		this.InHeaderFile = false;
+		OpenStringWriter();
+		WriteResources(program.Resources, false);
+		OpenNamespace();
+		foreach (FuClass klass in program.Classes) {
+			WriteConstructor(klass);
+			WriteMethods(klass);
+		}
+		WriteResources(program.Resources, true);
+		CloseNamespace();
+
+		if (this.StringReplace) {
+			Include("string");
+			Include("string_view");
+		}
+		CreateImplementationFile(program, ".hpp");
+		if (this.UsingStringViewLiterals)
+			WriteLine("using namespace std::string_view_literals;");
+		if (this.StringReplace) {
+			WriteNewLine();
+			WriteLine("static std::string FuString_replace(std::string_view s, std::string_view oldValue, std::string_view newValue)");
+			OpenBlock();
+			WriteLine("std::string result;");
+			WriteLine("result.reserve(s.size());");
+			WriteLine("for (std::string_view::size_type i = 0;;) {");
+			WriteLine("\tauto j = s.find(oldValue, i);");
+			WriteLine("\tif (j == std::string::npos) {");
+			WriteLine("\t\tresult.append(s, i);");
+			WriteLine("\t\treturn result;");
+			WriteLine("\t}");
+			WriteLine("\tresult.append(s, i, j - i);");
+			WriteLine("\tresult.append(newValue);");
+			WriteLine("\ti = j + oldValue.size();");
+			WriteCharLine('}');
+			CloseBlock();
+		}
+		CloseStringWriter();
+		CloseFile();
+	}
+}

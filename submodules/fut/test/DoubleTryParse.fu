@@ -1,0 +1,8 @@
+public static class Test
+{
+	public static bool Run()
+	{
+		double d;
+		return !d.TryParse("foo") && d.TryParse("5") && d == 5; //FAIL: py swift cl
+	}
+}

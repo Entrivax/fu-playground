@@ -1,0 +1,21 @@
+abstract class Base
+{
+	internal abstract bool Foo(); //FAIL: cl
+}
+
+class Derived : Base
+{
+	internal override bool Foo()
+	{
+		return true;
+	}
+}
+
+public static class Test
+{
+	public static bool Run()
+	{
+		Base# d = new Derived();
+		return d.Foo();
+	}
+}

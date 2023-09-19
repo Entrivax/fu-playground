@@ -1,0 +1,340 @@
+// GenTs.fu - TypeScript code generator
+//
+// Copyright (C) 2020-2021  Andy Edwards
+// Copyright (C) 2020-2023  Piotr Fusik
+//
+// This file is part of Fusion Transpiler,
+// see https://github.com/fusionlanguage/fut
+//
+// Fusion Transpiler is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Fusion Transpiler is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with Fusion Transpiler.  If not, see http://www.gnu.org/licenses/
+
+public class GenTs : GenJs
+{
+	FuSystem System;
+
+	// GenFullCode = false: only generate TypeScript declarations (.d.ts files)
+	// GenFullCode = true: generate full TypeScript code
+	bool GenFullCode = false;
+
+	protected override string GetTargetName() => "TypeScript";
+
+	public GenTs WithGenFullCode!()
+	{
+		GenFullCode = true;
+		return this;
+	}
+
+	internal override void VisitEnumValue!(FuConst konst, FuConst? previous)
+	{
+		WriteEnumValue(konst);
+		WriteCharLine(',');
+	}
+
+	protected override void WriteEnum!(FuEnum enu)
+	{
+		// WARNING: TypeScript enums allow reverse lookup that the Js generator currently
+		// doesn't implement
+		// https://www.typescriptlang.org/docs/handbook/enums.html#reverse-mappings
+		StartContainerType(enu);
+		Write("enum ");
+		Write(enu.Name);
+		WriteChar(' ');
+		OpenBlock();
+		enu.AcceptValues(this);
+		CloseBlock();
+	}
+
+	protected override void WriteTypeAndName!(FuNamedValue value)
+	{
+		WriteName(value);
+		Write(": ");
+		WriteType(value.Type);
+	}
+
+	void WriteType!(FuType type, bool readOnly = false)
+	{
+		switch (type) {
+		case FuNumericType _:
+			Write(type.Id == FuId.LongType ? "bigint" : "number");
+			break;
+		case FuEnum enu:
+			Write(enu.Id == FuId.BoolType ? "boolean" : enu.Name);
+			break;
+		case FuClassType klass:
+			readOnly |= !(klass is FuReadWriteClassType);
+			switch (klass.Class.Id) {
+			case FuId.StringClass:
+				Write("string");
+				break;
+			case FuId.ArrayPtrClass when !(klass.GetElementType() is FuNumericType):
+			case FuId.ArrayStorageClass when !(klass.GetElementType() is FuNumericType):
+			case FuId.ListClass:
+			case FuId.QueueClass:
+			case FuId.StackClass:
+				if (readOnly)
+					Write("readonly ");
+				if (klass.GetElementType().Nullable)
+					WriteChar('(');
+				WriteType(klass.GetElementType());
+				if (klass.GetElementType().Nullable)
+					WriteChar(')');
+				Write("[]");
+				break;
+			default:
+				if (readOnly && klass.Class.TypeParameterCount > 0)
+					Write("Readonly<");
+				switch (klass.Class.Id) {
+				case FuId.ArrayPtrClass:
+				case FuId.ArrayStorageClass:
+					WriteArrayElementType(klass.GetElementType());
+					Write("Array");
+					break;
+				case FuId.HashSetClass:
+				case FuId.SortedSetClass:
+					Write("Set<");
+					WriteType(klass.GetElementType(), false);
+					WriteChar('>');
+					break;
+				case FuId.DictionaryClass:
+				case FuId.SortedDictionaryClass:
+					if (klass.GetKeyType() is FuEnum)
+						Write("Partial<");
+					Write("Record<");
+					WriteType(klass.GetKeyType());
+					Write(", ");
+					WriteType(klass.GetValueType());
+					WriteChar('>');
+					if (klass.GetKeyType() is FuEnum)
+						WriteChar('>');
+					break;
+				case FuId.OrderedDictionaryClass:
+					Write("Map<");
+					WriteType(klass.GetKeyType());
+					Write(", ");
+					WriteType(klass.GetValueType());
+					WriteChar('>');
+					break;
+				case FuId.RegexClass:
+					Write("RegExp");
+					break;
+				case FuId.MatchClass:
+					Write("RegExpMatchArray");
+					break;
+				default:
+					Write(klass.Class.Name);
+					break;
+				}
+				if (readOnly && klass.Class.TypeParameterCount > 0)
+					WriteChar('>');
+				break;
+			}
+			if (type.Nullable)
+				Write(" | null");
+			break;
+		default:
+			Write(type.Name);
+			break;
+		}
+	}
+
+	protected override void WriteAsType!(FuVar def)
+	{
+		Write(" as ");
+		Write(def.Type.Name);
+	}
+
+	protected override void WriteBinaryOperand!(FuExpr expr, FuPriority parent, FuBinaryExpr binary)
+	{
+		FuType type = binary.Type;
+		if (expr.Type is FuNumericType && binary.IsRel()) {
+			// work around https://github.com/microsoft/TypeScript/issues/30540
+			type = this.System.PromoteNumericTypes(binary.Left.Type, binary.Right.Type);
+		}
+		WriteCoerced(type, expr, parent);
+	}
+
+	protected override void WriteEqualOperand!(FuExpr expr, FuExpr other)
+	{
+		if (expr.Type is FuNumericType)
+			WriteCoerced(this.System.PromoteNumericTypes(expr.Type, other.Type), expr, FuPriority.Equality);
+		else
+			expr.Accept(this, FuPriority.Equality);
+	}
+
+	protected override void WriteBoolAndOr!(FuBinaryExpr expr)
+	{
+		Write("[ ");
+		expr.Left.Accept(this, FuPriority.Argument);
+		Write(", ");
+		expr.Right.Accept(this, FuPriority.Argument);
+		Write(" ].");
+		Write(expr.Op == FuToken.And ? "every" : "some");
+		Write("(Boolean)");
+	}
+
+	protected override void DefineIsVar!(FuBinaryExpr binary)
+	{
+		if (binary.Right is FuVar def) {
+			EnsureChildBlock();
+			Write("let ");
+			WriteName(def);
+			Write(": ");
+			WriteType(binary.Left.Type);
+			EndStatement();
+		}
+	}
+
+	void WriteVisibility!(FuVisibility visibility)
+	{
+		switch (visibility) {
+		case FuVisibility.Private:
+		case FuVisibility.Internal:
+			break;
+		case FuVisibility.Protected:
+			Write("protected ");
+			break;
+		case FuVisibility.Public:
+			Write("public ");
+			break;
+		default:
+			assert false;
+		}
+	}
+
+	protected override void WriteConst!(FuConst konst)
+	{
+		WriteNewLine();
+		WriteDoc(konst.Documentation);
+		WriteVisibility(konst.Visibility);
+		Write("static readonly ");
+		WriteName(konst);
+		Write(": ");
+		WriteType(konst.Type, true);
+		if (this.GenFullCode) {
+			Write(" = ");
+			konst.Value.Accept(this, FuPriority.Argument);
+		}
+		WriteCharLine(';');
+	}
+
+	protected override void WriteField!(FuField field)
+	{
+		WriteDoc(field.Documentation);
+		WriteVisibility(field.Visibility);
+		if (field.Type.IsFinal() && !field.IsAssignableStorage())
+			Write("readonly ");
+		WriteTypeAndName(field);
+		if (this.GenFullCode)
+			WriteVarInit(field);
+		WriteCharLine(';');
+	}
+
+	protected override void WriteMethod!(FuMethod method)
+	{
+		WriteNewLine();
+		WriteMethodDoc(method);
+		WriteVisibility(method.Visibility);
+		switch (method.CallType) {
+		case FuCallType.Static:
+			Write("static ");
+			break;
+		case FuCallType.Virtual:
+			break;
+		case FuCallType.Abstract:
+			Write("abstract ");
+			break;
+		case FuCallType.Override:
+			break;
+		case FuCallType.Normal:
+			// no final methods in TS
+			break;
+		case FuCallType.Sealed:
+			// no final methods in TS
+			break;
+		default:
+			assert false;
+		}
+		WriteName(method);
+		WriteChar('(');
+		int i = 0;
+		for (FuVar? param = method.Parameters.FirstParameter(); param != null; param = param.NextParameter()) {
+			if (i > 0)
+				Write(", ");
+			WriteName(param);
+			if (param.Value != null && !this.GenFullCode)
+				WriteChar('?');
+			Write(": ");
+			WriteType(param.Type);
+			if (param.Value != null && this.GenFullCode)
+				WriteVarInit(param);
+			i++;
+		}
+		Write("): ");
+		WriteType(method.Type);
+		if (this.GenFullCode)
+			WriteBody(method);
+		else
+			WriteCharLine(';');
+	}
+
+	protected override void WriteClass!(FuClass klass, FuProgram program)
+	{
+		if (!WriteBaseClass(klass, program))
+			return;
+
+		StartContainerType(klass);
+		switch (klass.CallType) {
+		case FuCallType.Normal:
+			break;
+		case FuCallType.Abstract:
+			Write("abstract ");
+			break;
+		case FuCallType.Static:
+		case FuCallType.Sealed:
+			// there's no final/sealed keyword, but we accomplish it by marking the constructor private
+			break;
+		default:
+			assert false;
+		}
+		OpenClass(klass, "", " extends ");
+
+		if (NeedsConstructor(klass) || klass.CallType == FuCallType.Static) {
+			if (klass.Constructor != null) {
+				WriteDoc(klass.Constructor.Documentation);
+				WriteVisibility(klass.Constructor.Visibility);
+			}
+			else if (klass.CallType == FuCallType.Static)
+				Write("private ");
+			if (this.GenFullCode)
+				WriteConstructor(klass);
+			else
+				WriteLine("constructor();");
+		}
+
+		WriteMembers(klass, this.GenFullCode);
+		CloseBlock();
+	}
+
+	public override void WriteProgram!(FuProgram program)
+	{
+		this.System = program.System;
+		CreateOutputFile();
+		if (this.GenFullCode)
+			WriteTopLevelNatives(program);
+		WriteTypes(program);
+		if (this.GenFullCode)
+			WriteLib(program.Resources);
+		CloseFile();
+	}
+}

@@ -1,0 +1,14 @@
+public static class Test
+{
+	static bool Accept(string s) => s == "42";
+
+	public static bool Run()
+	{
+		int i = 42;
+		Accept($"{i}"); //FAIL: cl
+		bool b = Accept($"{i}");
+		if (!b)
+			return false;
+		return Accept($"{i}");
+	}
+}

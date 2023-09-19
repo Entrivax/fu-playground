@@ -1,0 +1,1382 @@
+// GenJava.fu - Java code generator
+//
+// Copyright (C) 2011-2023  Piotr Fusik
+//
+// This file is part of Fusion Transpiler,
+// see https://github.com/fusionlanguage/fut
+//
+// Fusion Transpiler is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Fusion Transpiler is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with Fusion Transpiler.  If not, see http://www.gnu.org/licenses/
+
+public class GenJava : GenTyped
+{
+	int SwitchCaseDiscards;
+
+	protected override string GetTargetName() => "Java";
+
+	internal override void VisitLiteralLong!(long value)
+	{
+		base.VisitLiteralLong(value);
+		if (value < int.MinValue || value > int.MaxValue)
+			WriteChar('L');
+	}
+
+	protected override int GetLiteralChars() => 0x10000;
+
+	void WriteToString!(FuExpr expr, FuPriority parent)
+	{
+		switch (expr.Type.Id) {
+		case FuId.LongType:
+			Write("Long");
+			break;
+		case FuId.FloatType:
+			Write("Float");
+			break;
+		case FuId.DoubleType:
+		case FuId.FloatIntType:
+			Write("Double");
+			break;
+		case FuId.StringPtrType:
+		case FuId.StringStorageType:
+			expr.Accept(this, parent);
+			return;
+		default:
+			if (expr.Type is FuIntegerType)
+				Write("Integer");
+			else if (expr.Type is FuClassType) {
+				WritePostfix(expr, ".toString()");
+				return;
+			}
+			else
+				assert false;
+			break;
+		}
+		WriteCall(".toString", expr);
+	}
+
+	protected override void WritePrintfWidth!(FuInterpolatedPart part)
+	{
+		if (part.Precision >= 0 && part.Argument.Type is FuIntegerType) {
+			WriteChar('0');
+			VisitLiteralLong(part.Precision);
+		}
+		else
+			base.WritePrintfWidth(part);
+	}
+
+	internal override void VisitInterpolatedString!(FuInterpolatedString expr, FuPriority parent)
+	{
+		if (expr.Suffix.Length == 0
+		 && expr.Parts.Count == 1
+		 && expr.Parts[0].Prefix.Length == 0
+		 && expr.Parts[0].WidthExpr == null
+		 && expr.Parts[0].Format == ' ')
+			WriteToString(expr.Parts[0].Argument, parent);
+		else {
+			Write("String.format(");
+			WritePrintf(expr, false);
+		}
+	}
+
+	void WriteCamelCaseNotKeyword!(string name)
+	{
+		WriteCamelCase(name);
+		switch (name) {
+		case "Abstract":
+		case "Assert":
+		case "Boolean":
+		case "Break":
+		case "Byte":
+		case "Case":
+		case "Catch":
+		case "Char":
+		case "Class":
+		case "Const":
+		case "Continue":
+		case "Default":
+		case "Do":
+		case "Double":
+		case "Else":
+		case "Enum":
+		case "Extends":
+		case "False":
+		case "Final":
+		case "Finally":
+		case "Float":
+		case "For":
+		case "Foreach":
+		case "Goto":
+		case "If":
+		case "Implements":
+		case "Import":
+		case "Instanceof":
+		case "Int":
+		case "Interface":
+		case "Long":
+		case "Native":
+		case "New":
+		case "Null":
+		case "Package":
+		case "Private":
+		case "Protected":
+		case "Public":
+		case "Return":
+		case "Short":
+		case "Static":
+		case "Strictfp":
+		case "String":
+		case "Super":
+		case "Switch":
+		case "Synchronized":
+		case "Transient":
+		case "Throw":
+		case "Throws":
+		case "True":
+		case "Try":
+		case "Void":
+		case "Volatile":
+		case "While":
+		case "Yield":
+		case "boolean":
+		case "catch":
+		case "char":
+		case "extends":
+		case "final":
+		case "finally":
+		case "goto":
+		case "implements":
+		case "import":
+		case "instanceof":
+		case "interface":
+		case "package":
+		case "private":
+		case "strictfp":
+		case "super":
+		case "synchronized":
+		case "transient":
+		case "try":
+		case "volatile":
+		case "yield":
+			WriteChar('_');
+			break;
+		default:
+			break;
+		}
+	}
+
+	protected override void WriteName!(FuSymbol symbol)
+	{
+		switch (symbol) {
+		case FuContainerType _:
+			Write(symbol.Name);
+			break;
+		case FuConst konst:
+			if (konst.InMethod != null) {
+				WriteUppercaseWithUnderscores(konst.InMethod.Name);
+				WriteChar('_');
+			}
+			WriteUppercaseWithUnderscores(symbol.Name);
+			break;
+		case FuVar _:
+			if (symbol.Parent is FuForeach forEach && forEach.Count() == 2) {
+				FuVar element = forEach.GetVar();
+				WriteCamelCaseNotKeyword(element.Name);
+				Write(symbol == element ? ".getKey()" : ".getValue()");
+			}
+			else
+				WriteCamelCaseNotKeyword(symbol.Name);
+			break;
+		case FuMember _:
+			WriteCamelCaseNotKeyword(symbol.Name);
+			break;
+		default:
+			assert false;
+		}
+	}
+
+	void WriteVisibility!(FuVisibility visibility)
+	{
+		switch (visibility) {
+		case FuVisibility.Private:
+			Write("private ");
+			break;
+		case FuVisibility.Internal:
+			break;
+		case FuVisibility.Protected:
+			Write("protected ");
+			break;
+		case FuVisibility.Public:
+			Write("public ");
+			break;
+		default:
+			assert false;
+		}
+	}
+
+	protected override FuId GetTypeId(FuType type, bool promote)
+	{
+		FuId id = base.GetTypeId(type, promote);
+		switch (id) {
+		case FuId.ByteRange:
+			return FuId.SByteRange; // store unsigned bytes in Java signed bytes
+		case FuId.UShortRange:
+			return FuId.IntType;
+		default:
+			return id;
+		}
+	}
+
+	static bool IsJavaEnum(FuEnum enu)
+	{
+		for (FuSymbol? symbol = enu.First; symbol != null; symbol = symbol.Next) {
+			if (symbol is FuConst konst && !(konst.Value is FuImplicitEnumValue))
+				return false;
+		}
+		return true;
+	}
+
+	void WriteCollectionType!(string name, FuType elementType)
+	{
+		Include("java.util." + name);
+		Write(name);
+		WriteChar('<');
+		WriteJavaType(elementType, false, true);
+		WriteChar('>');
+	}
+
+	void WriteDictType!(string name, FuClassType dict)
+	{
+		Write(name);
+		WriteChar('<');
+		WriteJavaType(dict.GetKeyType(), false, true);
+		Write(", ");
+		WriteJavaType(dict.GetValueType(), false, true);
+		WriteChar('>');
+	}
+
+	void WriteJavaType!(FuType type, bool promote, bool needClass)
+	{
+		switch (type) {
+		case FuNumericType _:
+			switch (GetTypeId(type, promote)) {
+			case FuId.SByteRange:
+				Write(needClass ? "Byte" : "byte");
+				break;
+			case FuId.ShortRange:
+				Write(needClass ? "Short" : "short");
+				break;
+			case FuId.IntType:
+				Write(needClass ? "Integer" : "int");
+				break;
+			case FuId.LongType:
+				Write(needClass ? "Long" : "long");
+				break;
+			case FuId.FloatType:
+				Write(needClass ? "Float" : "float");
+				break;
+			case FuId.DoubleType:
+				Write(needClass ? "Double" : "double");
+				break;
+			default:
+				assert false;
+			}
+			break;
+		case FuEnum enu:
+			Write(enu.Id == FuId.BoolType
+				? needClass ? "Boolean" : "boolean"
+				: IsJavaEnum(enu) ? enu.Name
+				: needClass ? "Integer" : "int");
+			break;
+ 		case FuClassType klass:
+			switch (klass.Class.Id) {
+			case FuId.StringClass:
+				Write("String");
+				break;
+			case FuId.ArrayPtrClass:
+			case FuId.ArrayStorageClass:
+				WriteType(klass.GetElementType(), false);
+				Write("[]");
+				break;
+			case FuId.ListClass:
+				WriteCollectionType("ArrayList", klass.GetElementType());
+				break;
+			case FuId.QueueClass:
+				WriteCollectionType("ArrayDeque", klass.GetElementType());
+				break;
+			case FuId.StackClass:
+				WriteCollectionType("Stack", klass.GetElementType());
+				break;
+			case FuId.HashSetClass:
+				WriteCollectionType("HashSet", klass.GetElementType());
+				break;
+			case FuId.SortedSetClass:
+				WriteCollectionType("TreeSet", klass.GetElementType());
+				break;
+			case FuId.DictionaryClass:
+				Include("java.util.HashMap");
+				WriteDictType("HashMap", klass);
+				break;
+			case FuId.SortedDictionaryClass:
+				Include("java.util.TreeMap");
+				WriteDictType("TreeMap", klass);
+				break;
+			case FuId.OrderedDictionaryClass:
+				Include("java.util.LinkedHashMap");
+				WriteDictType("LinkedHashMap", klass);
+				break;
+			case FuId.TextWriterClass:
+				Write("Appendable");
+				break;
+			case FuId.RegexClass:
+				Include("java.util.regex.Pattern");
+				Write("Pattern");
+				break;
+			case FuId.MatchClass:
+				Include("java.util.regex.Matcher");
+				Write("Matcher");
+				break;
+			case FuId.LockClass:
+				Write("Object");
+				break;
+			default:
+				Write(klass.Class.Name);
+				break;
+			}
+			break;
+		default:
+			Write(type.Name);
+			break;
+		}
+	}
+
+	protected override void WriteType!(FuType type, bool promote)
+	{
+		WriteJavaType(type, promote, false);
+	}
+
+	protected override void WriteNew!(FuReadWriteClassType klass, FuPriority parent)
+	{
+		Write("new ");
+		WriteType(klass, false);
+		Write("()");
+	}
+
+	protected override void WriteResource!(string name, int length)
+	{
+		Write("FuResource.getByteArray(");
+		VisitLiteralString(name);
+		Write(", ");
+		VisitLiteralLong(length);
+		WriteChar(')');
+	}
+
+	static bool IsUnsignedByte(FuType type) => type.Id == FuId.ByteRange && type is FuRangeType range && range.Max > 127;
+
+	static bool IsUnsignedByteIndexing(FuExpr expr) => expr.IsIndexing() && IsUnsignedByte(expr.Type);
+
+	void WriteIndexingInternal!(FuBinaryExpr expr)
+	{
+		if (expr.Left.Type.IsArray())
+			base.WriteIndexingExpr(expr, FuPriority.And /* don't care */);
+		else
+			WriteMethodCall(expr.Left, "get", expr.Right);
+	}
+
+	internal override void VisitPrefixExpr!(FuPrefixExpr expr, FuPriority parent)
+	{
+		if ((expr.Op == FuToken.Increment || expr.Op == FuToken.Decrement)
+		 && IsUnsignedByteIndexing(expr.Inner)) {
+			if (parent > FuPriority.And)
+				WriteChar('(');
+			Write(expr.Op == FuToken.Increment ? "++" : "--");
+			assert expr.Inner is FuBinaryExpr indexing;
+			WriteIndexingInternal(indexing);
+			if (parent != FuPriority.Statement)
+				Write(" & 0xff");
+			if (parent > FuPriority.And)
+				WriteChar(')');
+		}
+		else
+			base.VisitPrefixExpr(expr, parent);
+	}
+
+	internal override void VisitPostfixExpr!(FuPostfixExpr expr, FuPriority parent)
+	{
+		if ((expr.Op == FuToken.Increment || expr.Op == FuToken.Decrement)
+		 && IsUnsignedByteIndexing(expr.Inner)) {
+			if (parent > FuPriority.And)
+				WriteChar('(');
+			assert expr.Inner is FuBinaryExpr indexing;
+			WriteIndexingInternal(indexing);
+			Write(expr.Op == FuToken.Increment ? "++" : "--");
+			if (parent != FuPriority.Statement)
+				Write(" & 0xff");
+			if (parent > FuPriority.And)
+				WriteChar(')');
+		}
+		else
+			base.VisitPostfixExpr(expr, parent);
+	}
+
+	void WriteSByteLiteral!(FuLiteralLong literal)
+	{
+		if (literal.Value >= 0x80)
+			Write("(byte) ");
+		literal.Accept(this, FuPriority.Primary);
+	}
+
+	protected override void WriteEqual!(FuExpr left, FuExpr right, FuPriority parent, bool not)
+	{
+		if ((left.Type is FuStringType && right.Type.Id != FuId.NullType)
+		 || (right.Type is FuStringType && left.Type.Id != FuId.NullType)) {
+			if (not)
+				WriteChar('!');
+			WriteMethodCall(left, "equals", right);
+		}
+		else if (IsUnsignedByteIndexing(left)
+			&& right is FuLiteralLong rightLiteral && rightLiteral.Type.Id == FuId.ByteRange) {
+			if (parent > FuPriority.Equality)
+				WriteChar('(');
+			assert left is FuBinaryExpr indexing;
+			WriteIndexingInternal(indexing); // omit "& 0xff"
+			Write(GetEqOp(not));
+			WriteSByteLiteral(rightLiteral);
+			if (parent > FuPriority.Equality)
+				WriteChar(')');
+		}
+		else
+			base.WriteEqual(left, right, parent, not);
+	}
+
+	protected override void WriteCoercedLiteral!(FuType? type, FuExpr expr)
+	{
+		if (IsUnsignedByte(type)) {
+			assert expr is FuLiteralLong literal;
+			WriteSByteLiteral(literal);
+		}
+		else
+			base.WriteCoercedLiteral(type, expr);
+	}
+
+	protected override void WriteRel!(FuBinaryExpr expr, FuPriority parent, string op)
+	{
+		if (expr.Left.Type is FuEnum enu && IsJavaEnum(enu)) {
+			if (parent > FuPriority.CondAnd)
+				WriteChar('(');
+			WriteMethodCall(expr.Left, "compareTo", expr.Right);
+			Write(op);
+			WriteChar('0');
+			if (parent > FuPriority.CondAnd)
+				WriteChar(')');
+		}
+		else
+			base.WriteRel(expr, parent, op);
+	}
+
+	protected override void WriteAnd!(FuBinaryExpr expr, FuPriority parent)
+	{
+		if (IsUnsignedByteIndexing(expr.Left)
+		 && expr.Right is FuLiteralLong rightLiteral) {
+			if (parent > FuPriority.CondAnd && parent != FuPriority.And)
+				WriteChar('(');
+			assert expr.Left is FuBinaryExpr indexing;
+			WriteIndexingInternal(indexing); // omit "& 0xff"
+			Write(" & ");
+			VisitLiteralLong(0xff & rightLiteral.Value);
+			if (parent > FuPriority.CondAnd && parent != FuPriority.And)
+				WriteChar(')');
+		}
+		else
+			base.WriteAnd(expr, parent);
+	}
+
+	protected override void WriteStringLength!(FuExpr expr)
+	{
+		WritePostfix(expr, ".length()");
+	}
+
+	protected override void WriteCharAt!(FuBinaryExpr expr)
+	{
+		WriteMethodCall(expr.Left, "charAt", expr.Right);
+	}
+
+	internal override void VisitSymbolReference!(FuSymbolReference expr, FuPriority parent)
+	{
+		switch (expr.Symbol.Id) {
+		case FuId.ConsoleError:
+			Write("System.err");
+			break;
+		case FuId.ListCount:
+		case FuId.QueueCount:
+		case FuId.StackCount:
+		case FuId.HashSetCount:
+		case FuId.SortedSetCount:
+		case FuId.DictionaryCount:
+		case FuId.SortedDictionaryCount:
+		case FuId.OrderedDictionaryCount:
+			expr.Left.Accept(this, FuPriority.Primary);
+			WriteMemberOp(expr.Left, expr);
+			Write("size()");
+			break;
+		case FuId.MathNaN:
+			Write("Float.NaN");
+			break;
+		case FuId.MathNegativeInfinity:
+			Write("Float.NEGATIVE_INFINITY");
+			break;
+		case FuId.MathPositiveInfinity:
+			Write("Float.POSITIVE_INFINITY");
+			break;
+		default:
+			if (!WriteJavaMatchProperty(expr, parent))
+				base.VisitSymbolReference(expr, parent);
+			break;
+		}
+	}
+
+	void WriteArrayBinarySearchFill!(FuExpr obj, string method, List<FuExpr#> args)
+	{
+		Include("java.util.Arrays");
+		Write("Arrays.");
+		Write(method);
+		WriteChar('(');
+		obj.Accept(this, FuPriority.Argument);
+		Write(", ");
+		if (args.Count == 3) {
+			WriteStartEnd(args[1], args[2]);
+			Write(", ");
+		}
+		WriteNotPromoted(obj.Type.AsClassType().GetElementType(), args[0]);
+		WriteChar(')');
+	}
+
+	void WriteWrite!(FuMethod method, List<FuExpr#> args, bool newLine)
+	{
+		if (args.Count == 1 && args[0] is FuInterpolatedString interpolated) {
+			Write(".format(");
+			WritePrintf(interpolated, newLine);
+		}
+		else {
+			Write(".print");
+			if (newLine)
+				Write("ln");
+			WriteArgsInParentheses(method, args);
+		}
+	}
+
+	void WriteCompileRegex!(List<FuExpr#> args, int argIndex)
+	{
+		Include("java.util.regex.Pattern");
+		Write("Pattern.compile(");
+		args[argIndex].Accept(this, FuPriority.Argument);
+		WriteRegexOptions(args, ", ", " | ", "", "Pattern.CASE_INSENSITIVE", "Pattern.MULTILINE", "Pattern.DOTALL");
+		WriteChar(')');
+	}
+
+	protected override void WriteCallExpr!(FuExpr? obj, FuMethod method, List<FuExpr#> args, FuPriority parent)
+	{
+		switch (method.Id) {
+		case FuId.None:
+		case FuId.ClassToString:
+		case FuId.StringContains:
+		case FuId.StringEndsWith:
+		case FuId.StringIndexOf:
+		case FuId.StringLastIndexOf:
+		case FuId.StringReplace:
+		case FuId.StringStartsWith:
+		case FuId.ListClear:
+		case FuId.ListContains:
+		case FuId.ListIndexOf:
+		case FuId.QueueClear:
+		case FuId.StackClear:
+		case FuId.StackPeek:
+		case FuId.StackPush:
+		case FuId.StackPop:
+		case FuId.HashSetAdd:
+		case FuId.HashSetClear:
+		case FuId.HashSetContains:
+		case FuId.HashSetRemove:
+		case FuId.SortedSetAdd:
+		case FuId.SortedSetClear:
+		case FuId.SortedSetContains:
+		case FuId.SortedSetRemove:
+		case FuId.DictionaryClear:
+		case FuId.DictionaryContainsKey:
+		case FuId.DictionaryRemove:
+		case FuId.SortedDictionaryClear:
+		case FuId.SortedDictionaryContainsKey:
+		case FuId.SortedDictionaryRemove:
+		case FuId.OrderedDictionaryClear:
+		case FuId.OrderedDictionaryContainsKey:
+		case FuId.OrderedDictionaryRemove:
+		case FuId.StringWriterToString:
+		case FuId.MathMethod:
+		case FuId.MathAbs:
+		case FuId.MathMaxInt:
+		case FuId.MathMaxDouble:
+		case FuId.MathMinInt:
+		case FuId.MathMinDouble:
+			if (obj != null) {
+				if (IsReferenceTo(obj, FuId.BasePtr))
+					Write("super");
+				else
+					obj.Accept(this, FuPriority.Primary);
+				WriteChar('.');
+			}
+			WriteName(method);
+			WriteArgsInParentheses(method, args);
+			break;
+		case FuId.EnumFromInt:
+			args[0].Accept(this, parent);
+			break;
+		case FuId.EnumHasFlag:
+			WriteEnumHasFlag(obj, args, parent);
+			break;
+		case FuId.DoubleTryParse:
+			Include("java.util.function.DoubleSupplier");
+			Write("!Double.isNaN(");
+			obj.Accept(this, FuPriority.Assign);
+			Write(" = ((DoubleSupplier) () -> { try { return Double.parseDouble(");
+			args[0].Accept(this, FuPriority.Argument);
+			Write("); } catch (NumberFormatException e) { return Double.NaN; } }).getAsDouble())");
+			break;
+		case FuId.StringSubstring:
+			WritePostfix(obj, ".substring(");
+			args[0].Accept(this, FuPriority.Argument);
+			if (args.Count == 2) {
+				Write(", ");
+				WriteAdd(args[0], args[1]); // FIXME: side effect
+			}
+			WriteChar(')');
+			break;
+		case FuId.ArrayBinarySearchAll:
+		case FuId.ArrayBinarySearchPart:
+			WriteArrayBinarySearchFill(obj, "binarySearch", args);
+			break;
+// fails for "int" etc.
+//		case FuId.ArrayContains:
+//			Include("java.util.List");
+//			Write("List.of(");
+//			obj.Accept(this, FuPriority.Argument);
+//			Write(").contains(");
+//			args[0].Accept(this, FuPriority.Argument);
+//			WriteChar(')');
+//			break;
+		case FuId.ArrayCopyTo:
+			Write("System.arraycopy(");
+			obj.Accept(this, FuPriority.Argument);
+			Write(", ");
+			WriteArgs(method, args);
+			WriteChar(')');
+			break;
+		case FuId.ArrayFillAll:
+		case FuId.ArrayFillPart:
+			WriteArrayBinarySearchFill(obj, "fill", args);
+			break;
+		case FuId.ArraySortAll:
+			Include("java.util.Arrays");
+			WriteCall("Arrays.sort", obj);
+			break;
+		case FuId.ArraySortPart:
+			Include("java.util.Arrays");
+			Write("Arrays.sort(");
+			obj.Accept(this, FuPriority.Argument);
+			Write(", ");
+			WriteStartEnd(args[0], args[1]);
+			WriteChar(')');
+			break;
+		case FuId.ListAdd:
+			WriteListAdd(obj, "add", args);
+			break;
+		case FuId.ListAddRange:
+			WriteMethodCall(obj, "addAll", args[0]);
+			break;
+		case FuId.ListAll:
+			WriteMethodCall(obj, "stream().allMatch", args[0]);
+			break;
+		case FuId.ListAny:
+			WriteMethodCall(obj, "stream().anyMatch", args[0]);
+			break;
+		case FuId.ListCopyTo:
+			Write("for (int _i = 0; _i < ");
+			args[3].Accept(this, FuPriority.Rel); // FIXME: side effect in every iteration
+			WriteLine("; _i++)");
+			Write("\t");
+			args[1].Accept(this, FuPriority.Primary); // FIXME: side effect in every iteration
+			WriteChar('[');
+			StartAdd(args[2]); // FIXME: side effect in every iteration
+			Write("_i] = ");
+			WritePostfix(obj, ".get("); // FIXME: side effect in every iteration
+			StartAdd(args[0]); // FIXME: side effect in every iteration
+			Write("_i)");
+			break;
+		case FuId.ListInsert:
+			WriteListInsert(obj, "add", args);
+			break;
+		case FuId.ListLast:
+			WritePostfix(obj, ".get(");
+			WritePostfix(obj, ".size() - 1)"); // FIXME: side effect
+			break;
+		case FuId.ListRemoveAt:
+			WriteMethodCall(obj, "remove", args[0]);
+			break;
+		case FuId.ListRemoveRange:
+			WritePostfix(obj, ".subList(");
+			WriteStartEnd(args[0], args[1]);
+			Write(").clear()");
+			break;
+		case FuId.ListSortAll:
+			WritePostfix(obj, ".sort(null)");
+			break;
+		case FuId.ListSortPart:
+			WritePostfix(obj, ".subList(");
+			WriteStartEnd(args[0], args[1]);
+			Write(").sort(null)");
+			break;
+		case FuId.QueueDequeue:
+			WritePostfix(obj, ".remove()");
+			break;
+		case FuId.QueueEnqueue:
+			WriteMethodCall(obj, "add", args[0]);
+			break;
+		case FuId.QueuePeek:
+			WritePostfix(obj, ".element()");
+			break;
+		case FuId.DictionaryAdd:
+			WritePostfix(obj, ".put(");
+			args[0].Accept(this, FuPriority.Argument);
+			Write(", ");
+			WriteNewStorage(obj.Type.AsClassType().GetValueType());
+			WriteChar(')');
+			break;
+		case FuId.TextWriterWrite:
+			if (IsReferenceTo(obj, FuId.ConsoleError)) {
+				Write("System.err");
+				WriteWrite(method, args, false);
+			}
+			else {
+				Write("try { ");
+				WritePostfix(obj, ".append(");
+				WriteToString(args[0], FuPriority.Argument);
+				Include("java.io.IOException");
+				Write("); } catch (IOException e) { throw new RuntimeException(e); }");
+			}
+			break;
+		case FuId.TextWriterWriteChar:
+			if (IsReferenceTo(obj, FuId.ConsoleError))
+				WriteCharMethodCall(obj, "print", args[0]);
+			else {
+				Write("try { ");
+				WriteCharMethodCall(obj, "append", args[0]);
+				Include("java.io.IOException");
+				Write("; } catch (IOException e) { throw new RuntimeException(e); }");
+			}
+			break;
+		case FuId.TextWriterWriteCodePoint:
+			if (IsReferenceTo(obj, FuId.ConsoleError)) {
+				WriteCall("System.err.print(Character.toChars", args[0]);
+				WriteChar(')');
+			}
+			else {
+				Write("try { ");
+				WriteMethodCall(obj, "append(Character.toString", args[0]);
+				Include("java.io.IOException");
+				Write("); } catch (IOException e) { throw new RuntimeException(e); }");
+			}
+			break;
+		case FuId.TextWriterWriteLine:
+			if (IsReferenceTo(obj, FuId.ConsoleError)) {
+				Write("System.err");
+				WriteWrite(method, args, true);
+			}
+			else {
+				Write("try { ");
+				WritePostfix(obj, ".append(");
+				if (args.Count == 0)
+					Write("'\\n'");
+				else if (args[0] is FuInterpolatedString interpolated) {
+					Write("String.format(");
+					WritePrintf(interpolated, true);
+				}
+				else {
+					WriteToString(args[0], FuPriority.Argument);
+					Write(").append('\\n'");
+				}
+				Include("java.io.IOException");
+				Write("); } catch (IOException e) { throw new RuntimeException(e); }");
+			}
+			break;
+		case FuId.StringWriterClear:
+			WritePostfix(obj, ".getBuffer().setLength(0)");
+			break;
+		case FuId.ConsoleWrite:
+			Write("System.out");
+			WriteWrite(method, args, false);
+			break;
+		case FuId.ConsoleWriteLine:
+			Write("System.out");
+			WriteWrite(method, args, true);
+			break;
+		case FuId.UTF8GetByteCount:
+			Include("java.nio.charset.StandardCharsets");
+			WritePostfix(args[0], ".getBytes(StandardCharsets.UTF_8).length"); // FIXME: quick&dirty!
+			break;
+		case FuId.UTF8GetBytes:
+			Include("java.nio.ByteBuffer");
+			Include("java.nio.CharBuffer");
+			Include("java.nio.charset.StandardCharsets");
+			Write("StandardCharsets.UTF_8.newEncoder().encode(CharBuffer.wrap(");
+			args[0].Accept(this, FuPriority.Argument);
+			Write("), ByteBuffer.wrap(");
+			args[1].Accept(this, FuPriority.Argument);
+			Write(", ");
+			args[2].Accept(this, FuPriority.Argument);
+			Write(", ");
+			WritePostfix(args[1], ".length"); // FIXME: side effect
+			if (!args[2].IsLiteralZero()) {
+				Write(" - ");
+				args[2].Accept(this, FuPriority.Mul); // FIXME: side effect
+			}
+			Write("), true)");
+			break;
+		case FuId.UTF8GetString:
+			Include("java.nio.charset.StandardCharsets");
+			Write("new String(");
+			WriteArgs(method, args);
+			Write(", StandardCharsets.UTF_8)");
+			break;
+		case FuId.EnvironmentGetEnvironmentVariable:
+			WriteCall("System.getenv", args[0]);
+			break;
+		case FuId.RegexCompile:
+			WriteCompileRegex(args, 0);
+			break;
+		case FuId.RegexEscape:
+			Include("java.util.regex.Pattern");
+			WriteCall("Pattern.quote", args[0]);
+			break;
+		case FuId.RegexIsMatchStr:
+			WriteCompileRegex(args, 1);
+			WriteCall(".matcher", args[0]);
+			Write(".find()");
+			break;
+		case FuId.RegexIsMatchRegex:
+			WriteMethodCall(obj, "matcher", args[0]);
+			Write(".find()");
+			break;
+		case FuId.MatchFindStr:
+		case FuId.MatchFindRegex:
+			WriteChar('(');
+			obj.Accept(this, FuPriority.Assign);
+			Write(" = ");
+			if (method.Id == FuId.MatchFindStr)
+				WriteCompileRegex(args, 1);
+			else
+				args[1].Accept(this, FuPriority.Primary);
+			WriteCall(".matcher", args[0]);
+			Write(").find()");
+			break;
+		case FuId.MatchGetCapture:
+			WriteMethodCall(obj, "group", args[0]);
+			break;
+		case FuId.MathCeiling:
+			WriteCall("Math.ceil", args[0]);
+			break;
+		case FuId.MathClamp:
+			Write("Math.min(Math.max(");
+			WriteClampAsMinMax(args);
+			break;
+		case FuId.MathFusedMultiplyAdd:
+			WriteCall("Math.fma", args[0], args[1], args[2]);
+			break;
+		case FuId.MathIsFinite:
+			WriteCall("Double.isFinite", args[0]);
+			break;
+		case FuId.MathIsInfinity:
+			WriteCall("Double.isInfinite", args[0]);
+			break;
+		case FuId.MathIsNaN:
+			WriteCall("Double.isNaN", args[0]);
+			break;
+		case FuId.MathLog2:
+			if (parent > FuPriority.Mul)
+				WriteChar('(');
+			WriteCall("Math.log", args[0]);
+			Write(" * 1.4426950408889635");
+			if (parent > FuPriority.Mul)
+				WriteChar(')');
+			break;
+		case FuId.MathRound:
+			WriteCall("Math.rint", args[0]);
+			break;
+		default:
+			NotSupported(obj, method.Name);
+			break;
+		}
+	}
+
+	protected override void WriteIndexingExpr!(FuBinaryExpr expr, FuPriority parent)
+	{
+		if (parent != FuPriority.Assign && IsUnsignedByte(expr.Type)) {
+			if (parent > FuPriority.And)
+				WriteChar('(');
+			WriteIndexingInternal(expr);
+			Write(" & 0xff");
+			if (parent > FuPriority.And)
+				WriteChar(')');
+		}
+		else
+			WriteIndexingInternal(expr);
+	}
+
+	protected override bool IsPromoted(FuExpr expr) => base.IsPromoted(expr) || IsUnsignedByteIndexing(expr);
+
+	protected override void WriteAssignRight!(FuBinaryExpr expr)
+	{
+		if (!IsUnsignedByteIndexing(expr.Left)
+		 && expr.Right is FuBinaryExpr rightBinary && rightBinary.IsAssign() && IsUnsignedByte(expr.Right.Type)) {
+			WriteChar('(');
+			base.WriteAssignRight(expr);
+			Write(") & 0xff");
+		}
+		else
+			base.WriteAssignRight(expr);
+	}
+
+	protected override void WriteAssign!(FuBinaryExpr expr, FuPriority parent)
+	{
+		if (expr.Left is FuBinaryExpr indexing
+		 && indexing.Op == FuToken.LeftBracket
+		 && indexing.Left.Type is FuClassType klass
+		 && !klass.IsArray()) {
+			WritePostfix(indexing.Left, klass.Class.Id == FuId.ListClass ? ".set(" : ".put(");
+			indexing.Right.Accept(this, FuPriority.Argument);
+			Write(", ");
+			WriteNotPromoted(expr.Type, expr.Right);
+			WriteChar(')');
+		}
+		else
+			base.WriteAssign(expr, parent);
+	}
+
+	protected override string GetIsOperator() => " instanceof ";
+
+	protected override void WriteVar!(FuNamedValue def)
+	{
+		if (def.Type.IsFinal() && !def.IsAssignableStorage())
+			Write("final ");
+		base.WriteVar(def);
+	}
+
+	protected override bool HasInitCode(FuNamedValue def) => (def.Type is FuArrayStorageType && def.Type.GetStorageType() is FuStorageType) || base.HasInitCode(def);
+
+	protected override void WriteInitCode!(FuNamedValue def)
+	{
+		if (!HasInitCode(def))
+			return;
+		if (def.Type is FuArrayStorageType array) {
+			int nesting = 0;
+			while (array.GetElementType() is FuArrayStorageType innerArray) {
+				OpenLoop("int", nesting++, array.Length);
+				array = innerArray;
+			}
+			OpenLoop("int", nesting++, array.Length);
+			WriteArrayElement(def, nesting);
+			Write(" = ");
+			assert array.GetElementType() is FuStorageType storage;
+			WriteNew(storage, FuPriority.Argument);
+			WriteCharLine(';');
+			while (--nesting >= 0)
+				CloseBlock();
+		}
+		else
+			base.WriteInitCode(def);
+	}
+
+	internal override void VisitLambdaExpr!(FuLambdaExpr expr)
+	{
+		WriteName(expr.First);
+		Write(" -> ");
+		expr.Body.Accept(this, FuPriority.Statement);
+	}
+
+	protected override void DefineIsVar!(FuBinaryExpr binary)
+	{
+	}
+
+	protected override void WriteAssert!(FuAssert statement)
+	{
+		if (statement.CompletesNormally()) {
+			Write("assert ");
+			statement.Cond.Accept(this, FuPriority.Argument);
+			if (statement.Message != null) {
+				Write(" : ");
+				statement.Message.Accept(this, FuPriority.Argument);
+			}
+		}
+		else {
+			// assert false;
+			Write("throw new AssertionError(");
+			if (statement.Message != null)
+				statement.Message.Accept(this, FuPriority.Argument);
+			WriteChar(')');
+		}
+		WriteCharLine(';');
+	}
+
+	internal override void VisitForeach!(FuForeach statement)
+	{
+		Write("for (");
+		assert statement.Collection.Type is FuClassType klass;
+		switch (klass.Class.Id) {
+		case FuId.StringClass:
+			Write("int _i = 0; _i < ");
+			WriteStringLength(statement.Collection); // FIXME: side effect in every iteration
+			Write("; _i++) ");
+			OpenBlock();
+			WriteTypeAndName(statement.GetVar());
+			Write(" = ");
+			statement.Collection.Accept(this, FuPriority.Primary); // FIXME: side effect in every iteration
+			WriteLine(".charAt(_i);");
+			FlattenBlock(statement.Body);
+			CloseBlock();
+			return;
+		case FuId.DictionaryClass:
+		case FuId.SortedDictionaryClass:
+		case FuId.OrderedDictionaryClass:
+			Include("java.util.Map");
+			WriteDictType("Map.Entry", klass);
+			WriteChar(' ');
+			Write(statement.GetVar().Name);
+			Write(" : ");
+			WritePostfix(statement.Collection, ".entrySet()");
+			break;
+		default:
+			WriteTypeAndName(statement.GetVar());
+			Write(" : ");
+			statement.Collection.Accept(this, FuPriority.Argument);
+			break;
+		}
+		WriteChar(')');
+		WriteChild(statement.Body);
+	}
+
+	internal override void VisitLock!(FuLock statement)
+	{
+		WriteCall("synchronized ", statement.Lock);
+		WriteChild(statement.Body);
+	}
+
+	protected override void WriteSwitchValue!(FuExpr expr)
+	{
+		if (IsUnsignedByteIndexing(expr)) {
+			assert expr is FuBinaryExpr indexing;
+			WriteIndexingInternal(indexing); // omit "& 0xff"
+		}
+		else
+			base.WriteSwitchValue(expr);
+	}
+
+	protected override void WriteSwitchCaseValue!(FuSwitch statement, FuExpr value)
+	{
+		if (value is FuSymbolReference symbol && symbol.Symbol.Parent is FuEnum enu && IsJavaEnum(enu))
+			WriteUppercaseWithUnderscores(symbol.Name);
+		else
+			base.WriteSwitchCaseValue(statement, value);
+	}
+
+	bool WriteSwitchCaseVar!(FuExpr expr)
+	{
+		expr.Accept(this, FuPriority.Argument);
+		if (expr is FuVar def && def.Name == "_") {
+			// javac: "as of release 9, '_' is a keyword, and may not be used as an identifier"
+			VisitLiteralLong(this.SwitchCaseDiscards++);
+			return true;
+		}
+		return false;
+	}
+
+	protected override void WriteSwitchCase!(FuSwitch statement, FuCase kase)
+	{
+		if (statement.IsTypeMatching()) {
+			foreach (FuExpr expr in kase.Values) {
+				Write("case ");
+				bool discard;
+				if (expr is FuBinaryExpr when1) {
+					discard = WriteSwitchCaseVar(when1.Left);
+					Write(" when ");
+					when1.Right.Accept(this, FuPriority.Argument);
+				}
+				else
+					discard = WriteSwitchCaseVar(expr);
+				WriteCharLine(':');
+				this.Indent++;
+				WriteSwitchCaseBody(kase.Body);
+				this.Indent--;
+				if (discard)
+					this.SwitchCaseDiscards--;
+			}
+		}
+		else
+			base.WriteSwitchCase(statement, kase);
+	}
+
+	internal override void VisitThrow!(FuThrow statement)
+	{
+		Write("throw new Exception(");
+		statement.Message.Accept(this, FuPriority.Argument);
+		WriteLine(");");
+	}
+
+	void CreateJavaFile!(string className)
+	{
+		CreateFile(this.OutputFile, className + ".java");
+		if (this.Namespace.Length != 0) {
+			Write("package ");
+			Write(this.Namespace);
+			WriteCharLine(';');
+		}
+	}
+
+	internal override void VisitEnumValue!(FuConst konst, FuConst? previous)
+	{
+		WriteDoc(konst.Documentation);
+		Write("int ");
+		WriteUppercaseWithUnderscores(konst.Name);
+		Write(" = ");
+		if (konst.Value is FuImplicitEnumValue imp)
+			VisitLiteralLong(imp.Value);
+		else
+			konst.Value.Accept(this, FuPriority.Argument);
+		WriteCharLine(';');
+	}
+
+	protected override void WriteEnum!(FuEnum enu)
+	{
+		CreateJavaFile(enu.Name);
+		WriteNewLine();
+		WriteDoc(enu.Documentation);
+		WritePublic(enu);
+		bool javaEnum = IsJavaEnum(enu);
+		Write(javaEnum ? "enum " : "interface ");
+		WriteLine(enu.Name);
+		OpenBlock();
+		if (javaEnum) {
+			for (FuSymbol? symbol = enu.GetFirstValue();;) {
+				WriteDoc(symbol.Documentation);
+				WriteUppercaseWithUnderscores(symbol.Name);
+				symbol = symbol.Next;
+				if (symbol == null)
+					break;
+				WriteCharLine(',');
+			}
+			WriteNewLine();
+		}
+		else
+			enu.AcceptValues(this);
+		CloseBlock();
+		CloseFile();
+	}
+
+	void WriteSignature!(FuMethod method, int paramCount)
+	{
+		WriteNewLine();
+		WriteMethodDoc(method);
+		WriteVisibility(method.Visibility);
+		switch (method.CallType) {
+		case FuCallType.Static:
+			Write("static ");
+			break;
+		case FuCallType.Virtual:
+			break;
+		case FuCallType.Abstract:
+			Write("abstract ");
+			break;
+		case FuCallType.Override:
+			Write("@Override ");
+			break;
+		case FuCallType.Normal:
+			if (method.Visibility != FuVisibility.Private)
+				Write("final ");
+			break;
+		case FuCallType.Sealed:
+			Write("final @Override ");
+			break;
+		default:
+			assert false;
+		}
+		WriteTypeAndName(method);
+		WriteChar('(');
+		FuVar param = method.Parameters.FirstParameter();
+		for (int i = 0; i < paramCount; i++) {
+			if (i > 0)
+				Write(", ");
+			WriteTypeAndName(param);
+			param = param.NextParameter();
+		}
+		WriteChar(')');
+		if (method.Throws)
+			Write(" throws Exception");
+	}
+
+	void WriteOverloads!(FuMethod method, int paramCount)
+	{
+		if (paramCount + 1 < method.Parameters.Count())
+			WriteOverloads(method, paramCount + 1);
+		WriteSignature(method, paramCount);
+		WriteNewLine();
+		OpenBlock();
+		if (method.Type.Id != FuId.VoidType)
+			Write("return ");
+		WriteName(method);
+		WriteChar('(');
+		FuVar param = method.Parameters.FirstParameter();
+		for (int i = 0; i < paramCount; i++) {
+			WriteName(param);
+			Write(", ");
+			param = param.NextParameter();
+		}
+		param.Value.Accept(this, FuPriority.Argument);
+		WriteLine(");");
+		CloseBlock();
+	}
+
+	protected override void WriteConst!(FuConst konst)
+	{
+		WriteNewLine();
+		WriteDoc(konst.Documentation);
+		WriteVisibility(konst.Visibility);
+		Write("static final ");
+		WriteTypeAndName(konst);
+		Write(" = ");
+		WriteCoercedExpr(konst.Type, konst.Value);
+		WriteCharLine(';');
+	}
+
+	protected override void WriteField!(FuField field)
+	{
+		WriteDoc(field.Documentation);
+		WriteVisibility(field.Visibility);
+		WriteVar(field);
+		WriteCharLine(';');
+	}
+
+	protected override void WriteMethod!(FuMethod method)
+	{
+		WriteSignature(method, method.Parameters.Count());
+		WriteBody(method);
+		int i = 0;
+		for (FuVar? param = method.Parameters.FirstParameter(); param != null; param = param.NextParameter()) {
+			if (param.Value != null) {
+				WriteOverloads(method, i);
+				break;
+			}
+			i++;
+		}
+	}
+
+	protected override void WriteClass!(FuClass klass, FuProgram program)
+	{
+		OpenStringWriter();
+
+		WriteDoc(klass.Documentation);
+		WritePublic(klass);
+		switch (klass.CallType) {
+		case FuCallType.Normal:
+			break;
+		case FuCallType.Abstract:
+			Write("abstract ");
+			break;
+		case FuCallType.Static:
+		case FuCallType.Sealed:
+			Write("final ");
+			break;
+		default:
+			assert false;
+		}
+		OpenClass(klass, "", " extends ");
+
+		if (klass.CallType == FuCallType.Static) {
+			Write("private ");
+			Write(klass.Name);
+			WriteLine("()");
+			OpenBlock();
+			CloseBlock();
+		}
+		else if (NeedsConstructor(klass)) {
+			if (klass.Constructor != null) {
+				WriteDoc(klass.Constructor.Documentation);
+				WriteVisibility(klass.Constructor.Visibility);
+			}
+			Write(klass.Name);
+			WriteLine("()");
+			OpenBlock();
+			WriteConstructorBody(klass);
+			CloseBlock();
+		}
+
+		WriteMembers(klass, true);
+
+		CloseBlock();
+
+		CreateJavaFile(klass.Name);
+		WriteTopLevelNatives(program);
+		WriteIncludes("import ", ";");
+		WriteNewLine();
+		CloseStringWriter();
+		CloseFile();
+	}
+
+	void WriteResources!()
+	{
+		CreateJavaFile("FuResource");
+		WriteLine("import java.io.DataInputStream;");
+		WriteLine("import java.io.IOException;");
+		WriteNewLine();
+		Write("class FuResource");
+		WriteNewLine();
+		OpenBlock();
+		WriteLine("static byte[] getByteArray(String name, int length)");
+		OpenBlock();
+		Write("DataInputStream dis = new DataInputStream(");
+		WriteLine("FuResource.class.getResourceAsStream(name));");
+		WriteLine("byte[] result = new byte[length];");
+		Write("try ");
+		OpenBlock();
+		Write("try ");
+		OpenBlock();
+		WriteLine("dis.readFully(result);");
+		CloseBlock();
+		Write("finally ");
+		OpenBlock();
+		WriteLine("dis.close();");
+		CloseBlock();
+		CloseBlock();
+		Write("catch (IOException e) ");
+		OpenBlock();
+		WriteLine("throw new RuntimeException();");
+		CloseBlock();
+		WriteLine("return result;");
+		CloseBlock();
+		CloseBlock();
+		CloseFile();
+	}
+
+	public override void WriteProgram!(FuProgram program)
+	{
+		this.SwitchCaseDiscards = 0;
+		WriteTypes(program);
+		if (program.Resources.Count > 0)
+			WriteResources();
+	}
+}

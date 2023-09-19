@@ -1,0 +1,28 @@
+abstract class Shape
+{
+}
+
+class Rectangle : Shape
+{
+}
+
+class Circle : Shape
+{
+}
+
+public static class Test
+{
+	public static bool Run()
+	{
+		bool a = true;
+		int[]? b = null;
+		Rectangle() r;
+		Circle() c;
+		Shape! s = a ? r : c;
+		if ((a ? a : false) ? false : a)
+			return false;
+		if (!a ? true : false)
+			return false;
+		return (a ? (true ? s : null) == r : b[0] == 5);
+	}
+}

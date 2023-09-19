@@ -1,0 +1,22 @@
+public class Test
+{
+	int Foo = 42;
+
+	static Test# CreateTest() => new Test(); //FAIL: cl
+
+	static int[]# CreateIntArray()
+	{
+		int[]# a = new int[2];
+		a[0] = 5;
+		a[1] = 10;
+		return a;
+	}
+
+	public static bool Run()
+	{
+		Test# p = CreateTest();
+		CreateTest();
+		int[]# a = CreateIntArray();
+		return p.Foo == 42 && a[0] == 5 && a[1] == 10;
+	}
+}

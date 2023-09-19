@@ -1,0 +1,369 @@
+// GenCl.fu - OpenCL C code generator
+//
+// Copyright (C) 2020-2023  Piotr Fusik
+//
+// This file is part of Fusion Transpiler,
+// see https://github.com/fusionlanguage/fut
+//
+// Fusion Transpiler is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Fusion Transpiler is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with Fusion Transpiler.  If not, see http://www.gnu.org/licenses/
+
+public class GenCl : GenC
+{
+	bool StringLength;
+	bool StringEquals;
+	bool StringStartsWith;
+	bool BytesEqualsString;
+
+	protected override string GetTargetName() => "OpenCL C";
+
+	protected override void IncludeStdBool!()
+	{
+	}
+
+	protected override void IncludeMath!()
+	{
+	}
+
+	protected override void WriteNumericType!(FuId id)
+	{
+		switch (id) {
+		case FuId.SByteRange:
+			Write("char");
+			break;
+		case FuId.ByteRange:
+			Write("uchar");
+			break;
+		case FuId.ShortRange:
+			Write("short");
+			break;
+		case FuId.UShortRange:
+			Write("ushort");
+			break;
+		case FuId.IntType:
+			Write("int");
+			break;
+		case FuId.LongType:
+			Write("long");
+			break;
+		default:
+			assert false;
+		}
+	}
+
+	protected override void WriteStringPtrType!()
+	{
+		Write("constant char *");
+	}
+
+	protected override void WriteClassType!(FuClassType klass, bool space)
+	{
+		switch (klass.Class.Id) {
+		case FuId.None:
+			if (klass is FuDynamicPtrType)
+				NotSupported(klass, "Dynamic reference");
+			else
+				base.WriteClassType(klass, space);
+			break;
+		case FuId.StringClass:
+			if (klass.Id == FuId.StringStorageType)
+				NotSupported(klass, "string()");
+			else
+				WriteStringPtrType();
+			break;
+		default:
+			NotSupported(klass, klass.Class.Name);
+			break;
+		}
+	}
+
+	protected override void WritePrintfLongPrefix!()
+	{
+		WriteChar('l');
+	}
+
+	protected override void WriteInterpolatedStringArgBase!(FuExpr expr)
+	{
+		expr.Accept(this, FuPriority.Argument);
+	}
+
+	internal override void VisitInterpolatedString!(FuInterpolatedString expr, FuPriority parent)
+	{
+		NotSupported(expr, "Interpolated strings");
+	}
+
+	protected override void WriteCamelCaseNotKeyword!(string name)
+	{
+		switch (name) {
+		case "Constant":
+		case "Global":
+		case "Kernel":
+		case "Local":
+		case "Private":
+		case "constant":
+		case "global":
+		case "kernel":
+		case "local":
+		case "private":
+			WriteCamelCase(name);
+			WriteChar('_');
+			break;
+		default:
+			base.WriteCamelCaseNotKeyword(name);
+			break;
+		}
+	}
+
+	protected override string GetConst(FuArrayStorageType array) => array.PtrTaken ? "const " : "constant ";
+
+	protected override void WriteSubstringEqual!(FuCallExpr call, string literal, FuPriority parent, bool not)
+	{
+		if (not)
+			WriteChar('!');
+		if (IsUTF8GetString(call)) {
+			this.BytesEqualsString = true;
+			Write("FuBytes_Equals(");
+		}
+		else {
+			this.StringStartsWith = true;
+			Write("FuString_StartsWith(");
+		}
+		WriteStringPtrAdd(call);
+		Write(", ");
+		VisitLiteralString(literal);
+		WriteChar(')');
+	}
+
+	protected override void WriteEqualStringInternal!(FuExpr left, FuExpr right, FuPriority parent, bool not)
+	{
+		this.StringEquals = true;
+		if (not)
+			WriteChar('!');
+		WriteCall("FuString_Equals", left, right);
+	}
+
+	protected override void WriteStringLength!(FuExpr expr)
+	{
+		this.StringLength = true;
+		WriteCall("strlen", expr);
+	}
+
+	void WriteConsoleWrite!(List<FuExpr#> args, bool newLine)
+	{
+		Write("printf(");
+		if (args.Count == 0)
+			Write("\"\\n\")");
+		else if (args[0] is FuInterpolatedString interpolated)
+			WritePrintf(interpolated, newLine);
+		else
+			WritePrintfNotInterpolated(args, newLine);
+	}
+
+	protected override void WriteCallExpr!(FuExpr? obj, FuMethod method, List<FuExpr#> args, FuPriority parent)
+	{
+		switch (method.Id) {
+		case FuId.None:
+		case FuId.ClassToString:
+			WriteCCall(obj, method, args);
+			break;
+		case FuId.EnumFromInt:
+			WriteStaticCast(method.Type, args[0]);
+			break;
+		case FuId.EnumHasFlag:
+			WriteEnumHasFlag(obj, args, parent);
+			break;
+		case FuId.StringStartsWith:
+			int c = GetOneAscii(args[0]);
+			if (c >= 0) {
+				if (parent > FuPriority.Equality)
+					WriteChar('(');
+				WritePostfix(obj, "[0] == ");
+				VisitLiteralChar(c);
+				if (parent > FuPriority.Equality)
+					WriteChar(')');
+			}
+			else {
+				this.StringStartsWith = true;
+				WriteCall("FuString_StartsWith", obj, args[0]);
+			}
+			break;
+		case FuId.StringSubstring:
+			WriteStringSubstring(obj, args, parent);
+			break;
+		case FuId.ArrayCopyTo:
+			Write("for (size_t _i = 0; _i < ");
+			args[3].Accept(this, FuPriority.Rel); // FIXME: side effect in every iteration
+			WriteLine("; _i++)");
+			WriteChar('\t');
+			args[1].Accept(this, FuPriority.Primary); // FIXME: side effect in every iteration
+			WriteChar('[');
+			StartAdd(args[2]); // FIXME: side effect in every iteration
+			Write("_i] = ");
+			obj.Accept(this, FuPriority.Primary); // FIXME: side effect in every iteration
+			WriteChar('[');
+			StartAdd(args[0]); // FIXME: side effect in every iteration
+			Write("_i]");
+			break;
+		case FuId.ArrayFillAll:
+		case FuId.ArrayFillPart:
+			WriteArrayFill(obj, args);
+			break;
+		case FuId.ConsoleWrite:
+			WriteConsoleWrite(args, false);
+			break;
+		case FuId.ConsoleWriteLine:
+			WriteConsoleWrite(args, true);
+			break;
+		case FuId.UTF8GetByteCount:
+			WriteStringLength(args[0]);
+			break;
+		case FuId.UTF8GetBytes:
+			Write("for (size_t _i = 0; ");
+			args[0].Accept(this, FuPriority.Primary); // FIXME: side effect in every iteration
+			WriteLine("[_i] != '\\0'; _i++)");
+			WriteChar('\t');
+			args[1].Accept(this, FuPriority.Primary); // FIXME: side effect in every iteration
+			WriteChar('[');
+			StartAdd(args[2]); // FIXME: side effect in every iteration
+			Write("_i] = ");
+			WritePostfix(args[0], "[_i]"); // FIXME: side effect in every iteration
+			break;
+		case FuId.MathMethod:
+		case FuId.MathClamp:
+		case FuId.MathIsFinite:
+		case FuId.MathIsNaN:
+		case FuId.MathLog2:
+		case FuId.MathMaxInt:
+		case FuId.MathMinInt:
+		case FuId.MathRound:
+			WriteLowercase(method.Name);
+			WriteArgsInParentheses(method, args);
+			break;
+		case FuId.MathAbs:
+			if (args[0].Type is FuFloatingType)
+				WriteChar('f');
+			WriteCall("abs", args[0]);
+			break;
+		case FuId.MathCeiling:
+			WriteCall("ceil", args[0]);
+			break;
+		case FuId.MathFusedMultiplyAdd:
+			WriteCall("fma", args[0], args[1], args[2]);
+			break;
+		case FuId.MathIsInfinity:
+			WriteCall("isinf", args[0]);
+			break;
+		case FuId.MathMaxDouble:
+			WriteCall("fmax", args[0], args[1]);
+			break;
+		case FuId.MathMinDouble:
+			WriteCall("fmin", args[0], args[1]);
+			break;
+		case FuId.MathTruncate:
+			WriteCall("trunc", args[0]);
+			break;
+		default:
+			NotSupported(obj, method.Name);
+			break;
+		}
+	}
+
+	protected override void WriteAssert!(FuAssert statement)
+	{
+	}
+
+	protected override void WriteSwitchCaseBody!(List<FuStatement#> statements)
+	{
+		if (statements.All(statement => statement is FuAssert))
+			WriteCharLine(';');
+		else
+			base.WriteSwitchCaseBody(statements);
+	}
+
+	void WriteLibrary!()
+	{
+		if (this.StringLength) {
+			WriteNewLine();
+			WriteLine("static int strlen(constant char *str)");
+			OpenBlock();
+			WriteLine("int len = 0;");
+			WriteLine("while (str[len] != '\\0')");
+			WriteLine("\tlen++;");
+			WriteLine("return len;");
+			CloseBlock();
+		}
+		if (this.StringEquals) {
+			WriteNewLine();
+			WriteLine("static bool FuString_Equals(constant char *str1, constant char *str2)");
+			OpenBlock();
+			WriteLine("for (size_t i = 0; str1[i] == str2[i]; i++) {");
+			WriteLine("\tif (str1[i] == '\\0')");
+			WriteLine("\t\treturn true;");
+			WriteCharLine('}');
+			WriteLine("return false;");
+			CloseBlock();
+		}
+		if (this.StringStartsWith) {
+			WriteNewLine();
+			WriteLine("static bool FuString_StartsWith(constant char *str1, constant char *str2)");
+			OpenBlock();
+			WriteLine("for (int i = 0; str2[i] != '\\0'; i++) {");
+			WriteLine("\tif (str1[i] != str2[i])");
+			WriteLine("\t\treturn false;");
+			WriteCharLine('}');
+			WriteLine("return true;");
+			CloseBlock();
+		}
+		if (this.BytesEqualsString) {
+			WriteNewLine();
+			WriteLine("static bool FuBytes_Equals(const uchar *mem, constant char *str)");
+			OpenBlock();
+			WriteLine("for (int i = 0; str[i] != '\\0'; i++) {");
+			WriteLine("\tif (mem[i] != str[i])");
+			WriteLine("\t\treturn false;");
+			WriteCharLine('}');
+			WriteLine("return true;");
+			CloseBlock();
+		}
+	}
+
+	public override void WriteProgram!(FuProgram program)
+	{
+		this.WrittenClasses.Clear();
+		this.StringLength = false;
+		this.StringEquals = false;
+		this.StringStartsWith = false;
+		this.BytesEqualsString = false;
+		OpenStringWriter();
+		foreach (FuClass klass in program.Classes) {
+			this.CurrentClass = klass;
+			WriteConstructor(klass);
+			WriteDestructor(klass);
+			WriteMethods(klass);
+		}
+
+		CreateOutputFile();
+		WriteTopLevelNatives(program);
+		WriteRegexOptionsEnum(program);
+		WriteTypedefs(program, true);
+		foreach (FuClass klass in program.Classes)
+			WriteSignatures(klass, true);
+		WriteTypedefs(program, false);
+		foreach (FuClass klass in program.Classes)
+			WriteClass(klass, program);
+		WriteResources(program.Resources);
+		WriteLibrary();
+		CloseStringWriter();
+		CloseFile();
+	}
+}

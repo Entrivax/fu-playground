@@ -1,0 +1,8 @@
+public static class Test
+{
+	public static bool Run()
+	{
+		return Math.IsNaN(Math.NaN)
+			&& !Math.IsFinite(Math.NaN);
+	}
+}

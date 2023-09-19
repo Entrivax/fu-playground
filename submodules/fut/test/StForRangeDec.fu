@@ -1,0 +1,20 @@
+public static class Test
+{
+	public static bool Run()
+	{
+		int s = 0;
+		for (int i = 3; i > 1; i--)
+			s += i;
+	
+		int t = 0;
+		for (int i = 3; i >= 1; i--)
+			t += i;
+
+		int one = 1;
+		int u = 0;
+		for (int i = 3; i >= one; i--)
+			u += i;
+
+		return s == 5 && t == 6 && u == 6;
+	}
+}

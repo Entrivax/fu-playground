@@ -1,0 +1,16 @@
+public static class Test
+{
+	public static bool Run()
+	{
+		Dictionary<int, int>() dict; //FAIL: swift TODO; cl
+		Dictionary<int, int>! p;
+		p = dict;
+		p[1] = 10;
+		p.Clear();
+		p[2] = 12;
+		p[2] = 20;
+		p[3] = 30;
+		p.Remove(1); //FAIL: py
+		return p.Count == 2 && p[2] == 20 && p[3] == 30 && p.ContainsKey(2);
+	}
+}

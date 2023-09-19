@@ -1,0 +1,25 @@
+public class Base
+{
+	public int Foo() => 42;
+}
+
+public class Test : Base
+{
+	static bool Check(Base p)
+	{
+		return p.Foo() == 42;
+	}
+
+	public static bool Run()
+	{
+		Test() o;
+		Base b = o;
+		Test p = o;
+		Base b2;
+		b2 = p;
+		return b.Foo() == 42
+			&& b2.Foo() == 42
+			&& Check(o)
+			&& Check(p);
+	}
+}

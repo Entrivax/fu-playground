@@ -1,0 +1,20 @@
+public static class Test
+{
+	const int[] ClassConst = { 5, 10, 15 };
+
+	static int Sum(int[] a, int length)
+	{
+		const int[] localConst = { 3, 2, 1, 0 };
+		int sum = 0;
+		for (int i = 0; i < length; i++)
+			sum += a[i] + localConst[i];
+		return sum;
+	}
+
+	public static bool Run()
+	{
+		const int[] localConst = { 1, 2, 3, 4 };
+		return Sum(ClassConst, ClassConst.Length) == 36
+			&& Sum(localConst, localConst.Length) == 16;
+	}
+}

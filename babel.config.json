@@ -1,0 +1,33 @@
+{
+    "presets": [
+        [
+            "@babel/preset-typescript",
+            {
+                "isTSX": true,
+                "allExtensions": true,
+                "jsxPragma": "h",
+                "jsxPragmaFrag": "Frag"
+            }
+        ],
+        [
+            "@babel/preset-react",
+            {
+                "pragma": "h",
+                "pragmaFrag": "Frag",
+                "runtime": "classic",
+                "throwIfNamespace": false
+            }
+        ]
+    ],
+    "plugins": [
+        [
+            "@babel/plugin-transform-react-jsx",
+            {
+                "runtime": "classic", // defaults to classic
+                "pragma": "h",
+                "pragmaFrag": "Frag",
+                "throwIfNamespace": false
+            }
+        ]
+    ]
+}

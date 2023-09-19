@@ -1,0 +1,30 @@
+public static class Test
+{
+	static string() Twice(string s) //FAIL: cl
+	{
+		string() stg = s;
+		stg += s;
+		return stg;
+	}
+
+	static string() Times(string s, int count)
+	{
+		string() stg = s;
+		stg += s;
+		if (count == 2)
+			return stg;
+		stg += s;
+		return stg;
+	}
+
+	static string() Identity(string s) => s;
+
+	public static bool Run()
+	{
+		string() stg = Twice("foo");
+		Twice("bar"); // don't leak
+		Times("x", 3); // don't leak
+		string() stg2 = Identity("bar");
+		return Identity(stg) == "foofoo" && stg == "foofoo" && stg2 == "bar";
+	}
+}

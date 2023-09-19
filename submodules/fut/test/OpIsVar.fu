@@ -1,0 +1,20 @@
+class Base
+{
+	protected virtual void Foo() { }
+}
+
+class Derived : Base
+{
+	internal bool Ok() => true;
+}
+
+public static class Test
+{
+	public static bool Run()
+	{
+		Derived() d;
+		Base! b = d;
+		return b is Derived ro && ro.Ok() //FAIL: c py swift cl TODO; java 17
+			&& b is Derived! rw && rw.Ok();
+	}
+}

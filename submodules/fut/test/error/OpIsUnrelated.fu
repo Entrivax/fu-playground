@@ -1,0 +1,13 @@
+public class Unrelated
+{
+}
+
+public class Test
+{
+	public static bool Run()
+	{
+		Test() o;
+		Test p = o;
+		return p is Unrelated; //ERROR: Test is not base class of Unrelated, the 'is' operator would always return 'false'
+	}
+}

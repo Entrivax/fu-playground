@@ -1,0 +1,36 @@
+/// Test for `cito` documentation comments.
+///
+/// Detailed description follows. First paragraph.
+///
+/// List.
+/// * item1
+/// * item2
+///
+/// One more paragraph.
+/// 2 * 3 < 7
+///
+/// M&Ms :->
+public class Test
+{
+	/// Constructs a test.
+	public Test()
+	{
+	}
+
+	/// An integer.
+	/// Details.
+	internal int X;
+
+	/// Returns `true` if the passed integer is even.
+	public bool IsEven(
+		/// The integer to check.
+		int x)
+		=> x % 2 == 0;
+
+	/// Returns `true`.
+	public static bool Run()
+	{
+		Test() o;
+		return true;
+	}
+}

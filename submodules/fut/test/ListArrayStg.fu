@@ -1,0 +1,19 @@
+public static class Test
+{
+	public static bool Run()
+	{
+		List<int[2]>() list; //FAIL: cl
+		list.Add();
+		list[0][0] = 100;
+		list[0][1] = 200;
+		list.Clear();
+		list.Add();
+		list[0][0] = 10;
+		list[0][1] = 11;
+		list.Add();
+		list.Insert(0);
+		list[0][0] = 20;
+		list[0][1] = 21;
+		return list.Count == 3 && list[0][0] == 20 && list[0][1] == 21 && list[1][0] == 10 && list[1][1] == 11;
+	}
+}

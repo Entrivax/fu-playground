@@ -1,0 +1,18 @@
+public class Test
+{
+	public static bool Run()
+	{
+		string() s = "foobar"; //FAIL: cl
+		string p = "foobar";
+		return s.EndsWith("")
+			&& s.EndsWith("bar")
+			&& s.EndsWith("foobar")
+			&& !s.EndsWith("foo")
+			&& p.EndsWith("")
+			&& p.EndsWith("bar")
+			&& p.EndsWith("foobar")
+			&& !p.EndsWith("foo")
+			&& "afoobar".EndsWith(s)
+			&& "afoobar".EndsWith(p);
+	}
+}

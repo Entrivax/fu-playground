@@ -1,0 +1,22 @@
+public static class Test
+{
+	public static bool Run()
+	{
+		int a = 0;
+		int b = 1;
+		if (++a == b) {
+			a++;
+		}
+		else {
+			b = -1;
+		}
+		if (++b == 2)
+			a++;
+		if (a == 42) {
+		}
+		else if (++a == 4) {
+			b++;
+		}
+		return a == 4 && b == 3;
+	}
+}

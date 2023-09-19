@@ -1,0 +1,8 @@
+public static class Test
+{
+	public static bool Run()
+	{
+		string(5) s = "foo"; //ERROR: Expected empty parentheses for storage type
+		return true;
+	}
+}

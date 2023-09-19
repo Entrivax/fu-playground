@@ -1,0 +1,9 @@
+public static class Test
+{
+	public static bool Run()
+	{
+#if 1 + 2 //ERROR: Invalid preprocessor expression //ERROR: Expected end-of-line, got integer constant
+#endif
+		return true;
+	}
+}

@@ -1,0 +1,17 @@
+public static class Test
+{
+	public static bool Run()
+	{
+		Queue<int>() q; //FAIL: cl
+		q.Enqueue(42);
+		q.Clear();
+		q.Enqueue(5);
+		q.Enqueue(10);
+		q.Enqueue(15);
+		q.Dequeue();
+		Queue<string>() q2;
+		q2.Enqueue("foo");
+		return q.Count == 2 && q.Dequeue() == 10 && q.Peek() == 15
+			&& q2.Dequeue() == "foo";
+	}
+}

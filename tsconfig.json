@@ -1,0 +1,16 @@
+{
+    "compilerOptions": {
+        "lib": ["DOM", "ESNext"],
+        "jsx": "preserve",
+        "jsxFactory": "h",
+        "jsxFragmentFactory": "Frag",
+        "allowJs": true,
+        "checkJs": true,
+        "noImplicitAny": false,
+        "strict": true,
+        "outDir": "dist",
+        "target": "ES6",
+        "types": ["./src/types.d.ts"]
+    },
+    "include": ["src/**/*"]
+}

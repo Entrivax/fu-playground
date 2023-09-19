@@ -1,0 +1,27 @@
+public abstract class Base
+{
+	internal virtual void Foo() throws //FAIL: cl
+	{
+	}
+
+	public int Bar() throws
+	{
+		Foo();
+		return 42;
+	}
+}
+
+public class Derived : Base
+{
+	internal override void Foo() throws
+	{
+	}
+}
+
+public static class Test
+{
+	public static bool Run()
+	{
+		return true;
+	}
+}

@@ -1,0 +1,26 @@
+public static class Test
+{
+	public static bool Run()
+	{
+#if true
+		bool b = true;
+#elif false
+		b = false;
+#elif true
+		b = false;
+#endif
+
+#if false
+		return false;
+#if true
+		return false;
+#endif
+#elif false
+		return false;
+#elif true
+		return b;
+#else
+		return false;
+#endif
+	}
+}

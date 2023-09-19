@@ -1,0 +1,7 @@
+public static @class Test //ERROR: Invalid character
+{
+	public static bool Run()
+	{
+		return true;
+	}
+}

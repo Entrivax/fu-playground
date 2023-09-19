@@ -1,0 +1,12 @@
+public static class Test
+{
+	public static bool Run()
+	{
+		string s = "\"\n\r\t";
+		return s.Length == 4
+			&& s[0] == '\"'
+			&& s[1] == '\n'
+			&& s[2] == '\r'
+			&& s[3] == '\t';
+	}
+}

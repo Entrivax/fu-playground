@@ -1,0 +1,20 @@
+public static class Test
+{
+	public static bool Run()
+	{
+		HashSet<int>() s; //FAIL: cl
+		s.Add(42);
+		s.Clear();
+		s.Add(1);
+		s.Add(3);
+		s.Add(2);
+		s.Add(1);
+		s.Remove(2);
+		HashSet<string()>() ss;
+		ss.Add("foo");
+		string p = "bar";
+		ss.Add(p);
+		return s.Count == 2 && s.Contains(1) && s.Contains(3) && !s.Contains(2)
+			&& ss.Count == 2 && ss.Contains("bar") && ss.Contains("foo") && !ss.Contains("FOO");
+	}
+}

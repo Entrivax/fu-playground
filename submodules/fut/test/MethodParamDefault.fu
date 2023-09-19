@@ -1,0 +1,18 @@
+public static class Test
+{
+	static bool Foo(int i = 42, bool b = true)
+	{
+		return i == 42 && b;
+	}
+
+	const int DefaultX = 5;
+
+	public static bool Bar(int x = DefaultX) => x == DefaultX;
+
+	public static bool Quux(int x = DefaultX + 1) => x == DefaultX + 1;
+
+	public static bool Run()
+	{
+		return Foo() && Bar() && Quux();
+	}
+}

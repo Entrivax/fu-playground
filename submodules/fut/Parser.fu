@@ -1,0 +1,1058 @@
+// Parser.fu - Fusion parser
+//
+// Copyright (C) 2011-2023  Piotr Fusik
+//
+// This file is part of Fusion Transpiler,
+// see https://github.com/fusionlanguage/fut
+//
+// Fusion Transpiler is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Fusion Transpiler is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with Fusion Transpiler.  If not, see http://www.gnu.org/licenses/
+
+public class FuParser : FuLexer
+{
+	internal FuProgram! Program;
+	string? XcrementParent = null;
+	FuLoop? CurrentLoop = null;
+	FuCondCompletionStatement!? CurrentLoopOrSwitch = null;
+
+	bool DocParseLine!(FuDocPara! para)
+	{
+		if (para.Children.Count > 0)
+			para.Children.Add(new FuDocLine());
+		this.LexemeOffset = this.CharOffset;
+		for (int lastNonWhitespace = 0;;) {
+			switch (PeekChar()) {
+			case -1:
+			case '\n':
+			case '\r':
+				para.Children.Add(new FuDocText { Text = GetLexeme() });
+				return lastNonWhitespace == '.';
+			case '\t':
+			case ' ':
+				ReadChar();
+				break;
+			case '`':
+				if (this.CharOffset > this.LexemeOffset)
+					para.Children.Add(new FuDocText { Text = GetLexeme() });
+				ReadChar();
+				this.LexemeOffset = this.CharOffset;
+				for (;;) {
+					int c = PeekChar();
+					if (c == '`') {
+						para.Children.Add(new FuDocCode { Text = GetLexeme() });
+						ReadChar();
+						break;
+					}
+					if (c < 0 || c == '\n') {
+						ReportError("Unterminated code in documentation comment");
+						break;
+					}
+					ReadChar();
+				}
+				this.LexemeOffset = this.CharOffset;
+				lastNonWhitespace = '`';
+				break;
+			default:
+				lastNonWhitespace = ReadChar();
+				break;
+			}
+		}
+	}
+
+	void DocParsePara!(FuDocPara! para)
+	{
+		do {
+			DocParseLine(para);
+			NextToken();
+		} while (See(FuToken.DocRegular));
+	}
+
+	FuCodeDoc#? ParseDoc!()
+	{
+		if (!See(FuToken.DocRegular))
+			return null;
+		FuCodeDoc# doc = new FuCodeDoc();
+		bool period;
+		do {
+			period = DocParseLine(doc.Summary);
+			NextToken();
+		} while (!period && See(FuToken.DocRegular));
+		for (;;) {
+			switch (this.CurrentToken) {
+			case FuToken.DocRegular:
+				FuDocPara# para = new FuDocPara();
+				DocParsePara(para);
+				doc.Details.Add(para);
+				break;
+			case FuToken.DocBullet:
+				FuDocList# list = new FuDocList();
+				do {
+					list.Items.Add();
+					DocParsePara(list.Items.Last());
+				} while (See(FuToken.DocBullet));
+				doc.Details.Add(list);
+				break;
+			case FuToken.DocBlank:
+				NextToken();
+				break;
+			default:
+				return doc;
+			}
+		}
+	}
+
+	void CheckXcrementParent!()
+	{
+		if (this.XcrementParent != null) {
+			string op = See(FuToken.Increment) ? "++" : "--";
+			ReportError($"{op} not allowed on the right side of {this.XcrementParent}");
+		}
+	}
+
+	FuLiteralDouble# ParseDouble!()
+	{
+		double d;
+		if (!d.TryParse(GetLexeme().Replace("_", "")))
+			ReportError("Invalid floating-point number");
+		FuLiteralDouble# result = new FuLiteralDouble { Line = this.Line, Type = this.Program.System.DoubleType, Value = d };
+		NextToken();
+		return result;
+	}
+
+	bool SeeDigit()
+	{
+		int c = PeekChar();
+		return c >= '0' && c <= '9';
+	}
+
+	FuInterpolatedString# ParseInterpolatedString!()
+	{
+		FuInterpolatedString# result = new FuInterpolatedString { Line = this.Line };
+		do {
+			string() prefix = this.StringValue.Replace("{{", "{");
+			NextToken();
+			FuExpr# arg = ParseExpr();
+			FuExpr# width = Eat(FuToken.Comma) ? ParseExpr() : null;
+			int format = ' ';
+			int precision = -1;
+			if (See(FuToken.Colon)) {
+				format = ReadChar();
+				if (SeeDigit()) {
+					precision = ReadChar() - '0';
+					if (SeeDigit())
+						precision = precision * 10 + ReadChar() - '0';
+				}
+				NextToken();
+			}
+			result.AddPart(prefix, arg, width, format, precision);
+			Check(FuToken.RightBrace);
+		} while (ReadString(true) == FuToken.InterpolatedString);
+		result.Suffix = this.StringValue.Replace("{{", "{");
+		NextToken();
+		return result;
+	}
+
+	FuExpr# ParseParenthesized!()
+	{
+		Expect(FuToken.LeftParenthesis);
+		FuExpr# result = ParseExpr();
+		Expect(FuToken.RightParenthesis);
+		return result;
+	}
+
+	FuSymbolReference# ParseSymbolReference!(FuExpr#? left)
+	{
+		Check(FuToken.Id);
+		FuSymbolReference# result = new FuSymbolReference { Line = this.Line, Left = left, Name = this.StringValue };
+		NextToken();
+		return result;
+	}
+
+	void ParseCollection!(List<FuExpr#>! result, FuToken closing)
+	{
+		if (!See(closing)) {
+			do
+				result.Add(ParseExpr());
+			while (Eat(FuToken.Comma));
+		}
+		ExpectOrSkip(closing);
+	}
+
+	FuExpr# ParsePrimaryExpr!(bool type)
+	{
+		FuExpr#? result;
+		switch (this.CurrentToken) {
+		case FuToken.Increment:
+		case FuToken.Decrement:
+			CheckXcrementParent();
+			return new FuPrefixExpr { Line = this.Line, Op = NextToken(), Inner = ParsePrimaryExpr(false) };
+		case FuToken.Minus:
+		case FuToken.Tilde:
+		case FuToken.ExclamationMark:
+			return new FuPrefixExpr { Line = this.Line, Op = NextToken(), Inner = ParsePrimaryExpr(false) };
+		case FuToken.New:
+			FuPrefixExpr# newResult = new FuPrefixExpr { Line = this.Line, Op = NextToken() };
+			result = ParseType();
+			if (Eat(FuToken.LeftBrace))
+				result = new FuBinaryExpr { Line = this.Line, Left = result, Op = FuToken.LeftBrace, Right = ParseObjectLiteral() };
+			newResult.Inner = result;
+			return newResult;
+		case FuToken.LiteralLong:
+			result = this.Program.System.NewLiteralLong(this.LongValue, this.Line);
+			NextToken();
+			break;
+		case FuToken.LiteralDouble:
+			result = ParseDouble();
+			break;
+		case FuToken.LiteralChar:
+			result = FuLiteralChar.New(this.LongValue, this.Line);
+			NextToken();
+			break;
+		case FuToken.LiteralString:
+			result = this.Program.System.NewLiteralString(this.StringValue, this.Line);
+			NextToken();
+			break;
+		case FuToken.False:
+			result = new FuLiteralFalse { Line = this.Line, Type = this.Program.System.BoolType };
+			NextToken();
+			break;
+		case FuToken.True:
+			result = new FuLiteralTrue { Line = this.Line, Type = this.Program.System.BoolType };
+			NextToken();
+			break;
+		case FuToken.Null:
+			result = new FuLiteralNull { Line = this.Line, Type = this.Program.System.NullType };
+			NextToken();
+			break;
+		case FuToken.InterpolatedString:
+			result = ParseInterpolatedString();
+			break;
+		case FuToken.LeftParenthesis:
+			result = ParseParenthesized();
+			break;
+		case FuToken.Id:
+			FuSymbolReference# symbol = ParseSymbolReference(null);
+			if (Eat(FuToken.FatArrow)) {
+				FuLambdaExpr# lambda = new FuLambdaExpr { Line = symbol.Line };
+				lambda.Add(FuVar.New(null, symbol.Name));
+				lambda.Body = ParseExpr();
+				return lambda;
+			}
+			if (type && Eat(FuToken.Less)) {
+				FuAggregateInitializer# typeArgs = new FuAggregateInitializer();
+				bool saveTypeArg = this.ParsingTypeArg;
+				this.ParsingTypeArg = true;
+				do
+					typeArgs.Items.Add(ParseType());
+				while (Eat(FuToken.Comma));
+				Expect(FuToken.RightAngle);
+				this.ParsingTypeArg = saveTypeArg;
+				symbol.Left = typeArgs;
+			}
+			result = symbol;
+			break;
+		case FuToken.Resource:
+			NextToken();
+			if (Eat(FuToken.Less)
+			 && this.StringValue == "byte"
+			 && Eat(FuToken.Id)
+			 && Eat(FuToken.LeftBracket)
+			 && Eat(FuToken.RightBracket)
+			 && Eat(FuToken.Greater))
+				result = new FuPrefixExpr { Line = this.Line, Op = FuToken.Resource, Inner = ParseParenthesized() };
+			else {
+				ReportError("Expected 'resource<byte[]>'");
+				result = null;
+			}
+			break;
+		default:
+			ReportError("Invalid expression");
+			result = null;
+			break;
+		}
+		for (;;) {
+			switch (this.CurrentToken) {
+			case FuToken.Dot:
+				NextToken();
+				result = ParseSymbolReference(result);
+				break;
+			case FuToken.LeftParenthesis:
+				NextToken();
+				if (result is FuSymbolReference# method) {
+					FuCallExpr# call = new FuCallExpr { Line = this.Line, Method = method };
+					ParseCollection(call.Arguments, FuToken.RightParenthesis);
+					result = call;
+				}
+				else
+					ReportError("Expected a method");
+				break;
+			case FuToken.LeftBracket:
+				result = new FuBinaryExpr { Line = this.Line, Left = result, Op = NextToken(), Right = See(FuToken.RightBracket) ? null : ParseExpr() };
+				Expect(FuToken.RightBracket);
+				break;
+			case FuToken.Increment:
+			case FuToken.Decrement:
+				CheckXcrementParent();
+				result = new FuPostfixExpr { Line = this.Line, Inner = result, Op = NextToken() };
+				break;
+			case FuToken.ExclamationMark:
+			case FuToken.Hash:
+				result = new FuPostfixExpr { Line = this.Line, Inner = result, Op = NextToken() };
+				break;
+			case FuToken.QuestionMark:
+				if (!type)
+					return result;
+				result = new FuPostfixExpr { Line = this.Line, Inner = result, Op = NextToken() };
+				break;
+			default:
+				return result;
+			}
+		}
+	}
+
+	FuExpr# ParseMulExpr!()
+	{
+		FuExpr# left = ParsePrimaryExpr(false);
+		for (;;) {
+			switch (this.CurrentToken) {
+			case FuToken.Asterisk:
+			case FuToken.Slash:
+			case FuToken.Mod:
+				left = new FuBinaryExpr { Line = this.Line, Left = left, Op = NextToken(), Right = ParsePrimaryExpr(false) };
+				break;
+			default:
+				return left;
+			}
+		}
+	}
+
+	FuExpr# ParseAddExpr!()
+	{
+		FuExpr# left = ParseMulExpr();
+		while (See(FuToken.Plus) || See(FuToken.Minus))
+			left = new FuBinaryExpr { Line = this.Line, Left = left, Op = NextToken(), Right = ParseMulExpr() };
+		return left;
+	}
+
+	FuExpr# ParseShiftExpr!()
+	{
+		FuExpr# left = ParseAddExpr();
+		while (See(FuToken.ShiftLeft) || See(FuToken.ShiftRight))
+			left = new FuBinaryExpr { Line = this.Line, Left = left, Op = NextToken(), Right = ParseAddExpr() };
+		return left;
+	}
+
+	FuExpr# ParseRelExpr!()
+	{
+		FuExpr# left = ParseShiftExpr();
+		for (;;) {
+			switch (this.CurrentToken) {
+			case FuToken.Less:
+			case FuToken.LessOrEqual:
+			case FuToken.Greater:
+			case FuToken.GreaterOrEqual:
+				left = new FuBinaryExpr { Line = this.Line, Left = left, Op = NextToken(), Right = ParseShiftExpr() };
+				break;
+			case FuToken.Is:
+				FuBinaryExpr# isExpr = new FuBinaryExpr { Line = this.Line, Left = left, Op = NextToken(), Right = ParsePrimaryExpr(false) };
+				if (See(FuToken.Id)) {
+					isExpr.Right = new FuVar { Line = this.Line, TypeExpr = isExpr.Right, Name = this.StringValue };
+					NextToken();
+				}
+				return isExpr;
+			default:
+				return left;
+			}
+		}
+	}
+
+	FuExpr# ParseEqualityExpr!()
+	{
+		FuExpr# left = ParseRelExpr();
+		while (See(FuToken.Equal) || See(FuToken.NotEqual))
+			left = new FuBinaryExpr { Line = this.Line, Left = left, Op = NextToken(), Right = ParseRelExpr() };
+		return left;
+	}
+
+	FuExpr# ParseAndExpr!()
+	{
+		FuExpr# left = ParseEqualityExpr();
+		while (See(FuToken.And))
+			left = new FuBinaryExpr { Line = this.Line, Left = left, Op = NextToken(), Right = ParseEqualityExpr() };
+		return left;
+	}
+
+	FuExpr# ParseXorExpr!()
+	{
+		FuExpr# left = ParseAndExpr();
+		while (See(FuToken.Xor))
+			left = new FuBinaryExpr { Line = this.Line, Left = left, Op = NextToken(), Right = ParseAndExpr() };
+		return left;
+	}
+
+	FuExpr# ParseOrExpr!()
+	{
+		FuExpr# left = ParseXorExpr();
+		while (See(FuToken.Or))
+			left = new FuBinaryExpr { Line = this.Line, Left = left, Op = NextToken(), Right = ParseXorExpr() };
+		return left;
+	}
+
+	FuExpr# ParseCondAndExpr!()
+	{
+		FuExpr# left = ParseOrExpr();
+		while (See(FuToken.CondAnd)) {
+			string saveXcrementParent = this.XcrementParent;
+			this.XcrementParent = "&&";
+			left = new FuBinaryExpr { Line = this.Line, Left = left, Op = NextToken(), Right = ParseOrExpr() };
+			this.XcrementParent = saveXcrementParent;
+		}
+		return left;
+	}
+
+	FuExpr# ParseCondOrExpr!()
+	{
+		FuExpr# left = ParseCondAndExpr();
+		while (See(FuToken.CondOr)) {
+			string saveXcrementParent = this.XcrementParent;
+			this.XcrementParent = "||";
+			left = new FuBinaryExpr { Line = this.Line, Left = left, Op = NextToken(), Right = ParseCondAndExpr() };
+			this.XcrementParent = saveXcrementParent;
+		}
+		return left;
+	}
+
+	FuExpr# ParseExpr!()
+	{
+		FuExpr# left = ParseCondOrExpr();
+		if (See(FuToken.QuestionMark)) {
+			FuSelectExpr# result = new FuSelectExpr { Line = this.Line, Cond = left };
+			NextToken();
+			string saveXcrementParent = this.XcrementParent;
+			this.XcrementParent = "?";
+			result.OnTrue = ParseExpr();
+			Expect(FuToken.Colon);
+			result.OnFalse = ParseExpr();
+			this.XcrementParent = saveXcrementParent;
+			return result;
+		}
+		return left;
+	}
+
+	FuExpr# ParseType!()
+	{
+		FuExpr# left = ParsePrimaryExpr(true);
+		if (Eat(FuToken.Range))
+			return new FuBinaryExpr { Line = this.Line, Left = left, Op = FuToken.Range, Right = ParsePrimaryExpr(true) };
+		return left;
+	}
+
+	FuExpr# ParseConstInitializer!()
+	{
+		if (Eat(FuToken.LeftBrace)) {
+			FuAggregateInitializer# result = new FuAggregateInitializer { Line = this.Line };
+			ParseCollection(result.Items, FuToken.RightBrace);
+			return result;
+		}
+		return ParseExpr();
+	}
+
+	FuAggregateInitializer# ParseObjectLiteral!()
+	{
+		FuAggregateInitializer# result = new FuAggregateInitializer { Line = this.Line };
+		do {
+			int line = this.Line;
+			FuExpr# field = ParseSymbolReference(null);
+			Expect(FuToken.Assign);
+			result.Items.Add(new FuBinaryExpr { Line = line, Left = field, Op = FuToken.Assign, Right = ParseExpr() });
+		} while (Eat(FuToken.Comma));
+		Expect(FuToken.RightBrace);
+		return result;
+	}
+
+	FuExpr#? ParseInitializer!()
+	{
+		if (!Eat(FuToken.Assign))
+			return null;
+		if (Eat(FuToken.LeftBrace))
+			return ParseObjectLiteral();
+		return ParseExpr();
+	}
+
+	void AddSymbol!(FuScope! scope, FuSymbol# symbol)
+	{
+		if (scope.Contains(symbol))
+			ReportError("Duplicate symbol");
+		else
+			scope.Add(symbol);
+	}
+
+	FuVar# ParseVar!(FuExpr# type)
+	{
+		FuVar# result = new FuVar { Line = this.Line, TypeExpr = type, Name = this.StringValue };
+		NextToken();
+		result.Value = ParseInitializer();
+		return result;
+	}
+
+	FuConst# ParseConst!(FuVisibility visibility)
+	{
+		Expect(FuToken.Const);
+		FuConst# konst = new FuConst { Line = this.Line, Visibility = visibility, TypeExpr = ParseType(), Name = this.StringValue };
+		NextToken();
+		Expect(FuToken.Assign);
+		konst.Value = ParseConstInitializer();
+		Expect(FuToken.Semicolon);
+		return konst;
+	}
+
+	FuExpr# ParseAssign!(bool allowVar)
+	{
+		FuExpr# left = allowVar ? ParseType() : ParseExpr();
+		switch (this.CurrentToken) {
+		case FuToken.Assign:
+		case FuToken.AddAssign:
+		case FuToken.SubAssign:
+		case FuToken.MulAssign:
+		case FuToken.DivAssign:
+		case FuToken.ModAssign:
+		case FuToken.AndAssign:
+		case FuToken.OrAssign:
+		case FuToken.XorAssign:
+		case FuToken.ShiftLeftAssign:
+		case FuToken.ShiftRightAssign:
+			return new FuBinaryExpr { Line = this.Line, Left = left, Op = NextToken(), Right = ParseAssign(false) };
+		case FuToken.Id:
+			if (allowVar)
+				return ParseVar(left);
+			return left;
+		default:
+			return left;
+		}
+	}
+
+	FuBlock# ParseBlock!()
+	{
+		FuBlock# result = new FuBlock { Line = this.Line };
+		Expect(FuToken.LeftBrace);
+		while (!See(FuToken.RightBrace) && !See(FuToken.EndOfFile))
+			result.Statements.Add(ParseStatement());
+		Expect(FuToken.RightBrace);
+		return result;
+	}
+
+	FuAssert# ParseAssert!()
+	{
+		FuAssert# result = new FuAssert { Line = this.Line };
+		Expect(FuToken.Assert);
+		result.Cond = ParseExpr();
+		if (Eat(FuToken.Comma))
+			result.Message = ParseExpr();
+		Expect(FuToken.Semicolon);
+		return result;
+	}
+
+	FuBreak# ParseBreak!()
+	{
+		if (this.CurrentLoopOrSwitch == null)
+			ReportError("break outside loop or switch");
+		FuBreak# result = new FuBreak { Line = this.Line, LoopOrSwitch = this.CurrentLoopOrSwitch };
+		Expect(FuToken.Break);
+		Expect(FuToken.Semicolon);
+		if (this.CurrentLoopOrSwitch is FuLoop! loop)
+			loop.HasBreak = true;
+		return result;
+	}
+
+	FuContinue# ParseContinue!()
+	{
+		if (this.CurrentLoop == null)
+			ReportError("continue outside loop");
+		FuContinue# result = new FuContinue { Line = this.Line, Loop = this.CurrentLoop };
+		Expect(FuToken.Continue);
+		Expect(FuToken.Semicolon);
+		return result;
+	}
+
+	void ParseLoopBody!(FuLoop! loop)
+	{
+		FuLoop outerLoop = this.CurrentLoop;
+		FuCondCompletionStatement! outerLoopOrSwitch = this.CurrentLoopOrSwitch;
+		this.CurrentLoop = loop;
+		this.CurrentLoopOrSwitch = loop;
+		loop.Body = ParseStatement();
+		this.CurrentLoopOrSwitch = outerLoopOrSwitch;
+		this.CurrentLoop = outerLoop;
+	}
+
+	FuDoWhile# ParseDoWhile!()
+	{
+		FuDoWhile# result = new FuDoWhile { Line = this.Line };
+		Expect(FuToken.Do);
+		ParseLoopBody(result);
+		Expect(FuToken.While);
+		result.Cond = ParseParenthesized();
+		Expect(FuToken.Semicolon);
+		return result;
+	}
+
+	FuFor# ParseFor!()
+	{
+		FuFor# result = new FuFor { Line = this.Line };
+		Expect(FuToken.For);
+		Expect(FuToken.LeftParenthesis);
+		if (!See(FuToken.Semicolon))
+			result.Init = ParseAssign(true);
+		Expect(FuToken.Semicolon);
+		if (!See(FuToken.Semicolon))
+			result.Cond = ParseExpr();
+		Expect(FuToken.Semicolon);
+		if (!See(FuToken.RightParenthesis))
+			result.Advance = ParseAssign(false);
+		Expect(FuToken.RightParenthesis);
+		ParseLoopBody(result);
+		return result;
+	}
+
+	void ParseForeachIterator!(FuForeach! result)
+	{
+		AddSymbol(result, new FuVar { Line = this.Line, TypeExpr = ParseType(), Name = this.StringValue });
+		NextToken();
+	}
+
+	FuForeach# ParseForeach!()
+	{
+		FuForeach# result = new FuForeach { Line = this.Line };
+		Expect(FuToken.Foreach);
+		Expect(FuToken.LeftParenthesis);
+		if (Eat(FuToken.LeftParenthesis)) {
+			ParseForeachIterator(result);
+			Expect(FuToken.Comma);
+			ParseForeachIterator(result);
+			Expect(FuToken.RightParenthesis);
+		}
+		else
+			ParseForeachIterator(result);
+		Expect(FuToken.In);
+		result.Collection = ParseExpr();
+		Expect(FuToken.RightParenthesis);
+		ParseLoopBody(result);
+		return result;
+	}
+
+	FuIf# ParseIf!()
+	{
+		FuIf# result = new FuIf { Line = this.Line };
+		Expect(FuToken.If);
+		result.Cond = ParseParenthesized();
+		result.OnTrue = ParseStatement();
+		if (Eat(FuToken.Else))
+			result.OnFalse = ParseStatement();
+		return result;
+	}
+
+	FuLock# ParseLock!()
+	{
+		FuLock# result = new FuLock { Line = this.Line };
+		Expect(FuToken.Lock_);
+		result.Lock = ParseParenthesized();
+		result.Body = ParseStatement();
+		return result;
+	}
+
+	FuNative# ParseNative!()
+	{
+		FuNative# result = new FuNative { Line = this.Line };
+		Expect(FuToken.Native);
+		if (See(FuToken.LiteralString))
+			result.Content = this.StringValue;
+		else {
+			int offset = this.CharOffset;
+			Expect(FuToken.LeftBrace);
+			int nesting = 1;
+			for (;;) {
+				if (See(FuToken.EndOfFile)) {
+					Expect(FuToken.RightBrace);
+					return result;
+				}
+				if (See(FuToken.LeftBrace))
+					nesting++;
+				else if (See(FuToken.RightBrace)) {
+					if (--nesting == 0)
+						break;
+				}
+				NextToken();
+			}
+			assert this.Input[this.CharOffset - 1] == '}';
+			result.Content = Encoding.UTF8.GetString(this.Input, offset, this.CharOffset - 1 - offset);
+		}
+		NextToken();
+		return result;
+	}
+
+	FuReturn# ParseReturn!()
+	{
+		FuReturn# result = new FuReturn { Line = this.Line };
+		NextToken();
+		if (!See(FuToken.Semicolon))
+			result.Value = ParseExpr();
+		Expect(FuToken.Semicolon);
+		return result;
+	}
+
+	FuSwitch# ParseSwitch!()
+	{
+		FuSwitch# result = new FuSwitch { Line = this.Line };
+		Expect(FuToken.Switch);
+		result.Value = ParseParenthesized();
+		Expect(FuToken.LeftBrace);
+
+		FuCondCompletionStatement! outerLoopOrSwitch = this.CurrentLoopOrSwitch;
+		this.CurrentLoopOrSwitch = result;
+		while (Eat(FuToken.Case)) {
+			result.Cases.Add();
+			FuCase! kase = result.Cases.Last();
+			do {
+				FuExpr# expr = ParseExpr();
+				if (See(FuToken.Id))
+					expr = ParseVar(expr);
+				if (Eat(FuToken.When))
+					expr = new FuBinaryExpr { Line = this.Line, Left = expr, Op = FuToken.When, Right = ParseExpr() };
+				kase.Values.Add(expr);
+				Expect(FuToken.Colon);
+			} while (Eat(FuToken.Case));
+			if (See(FuToken.Default)) {
+				ReportError("Please remove 'case' before 'default'");
+				break;
+			}
+
+			while (!See(FuToken.EndOfFile)) {
+				kase.Body.Add(ParseStatement());
+				switch (this.CurrentToken) {
+				case FuToken.Case:
+				case FuToken.Default:
+				case FuToken.RightBrace:
+					break;
+				default:
+					continue;
+				}
+				break;
+			}
+		}
+		if (result.Cases.Count == 0)
+			ReportError("Switch with no cases");
+
+		if (Eat(FuToken.Default)) {
+			Expect(FuToken.Colon);
+			do {
+				if (See(FuToken.EndOfFile))
+					break;
+				result.DefaultBody.Add(ParseStatement());
+			} while (!See(FuToken.RightBrace));
+		}
+
+		Expect(FuToken.RightBrace);
+		this.CurrentLoopOrSwitch = outerLoopOrSwitch;
+		return result;
+	}
+
+	FuThrow# ParseThrow!()
+	{
+		FuThrow# result = new FuThrow { Line = this.Line };
+		Expect(FuToken.Throw);
+		result.Message = ParseExpr();
+		Expect(FuToken.Semicolon);
+		return result;
+	}
+
+	FuWhile# ParseWhile!()
+	{
+		FuWhile# result = new FuWhile { Line = this.Line };
+		Expect(FuToken.While);
+		result.Cond = ParseParenthesized();
+		ParseLoopBody(result);
+		return result;
+	}
+
+	FuStatement# ParseStatement!()
+	{
+		switch (this.CurrentToken) {
+		case FuToken.LeftBrace:
+			return ParseBlock();
+		case FuToken.Assert:
+			return ParseAssert();
+		case FuToken.Break:
+			return ParseBreak();
+		case FuToken.Const:
+			return ParseConst(FuVisibility.Private);
+		case FuToken.Continue:
+			return ParseContinue();
+		case FuToken.Do:
+			return ParseDoWhile();
+		case FuToken.For:
+			return ParseFor();
+		case FuToken.Foreach:
+			return ParseForeach();
+		case FuToken.If:
+			return ParseIf();
+		case FuToken.Lock_:
+			return ParseLock();
+		case FuToken.Native:
+			return ParseNative();
+		case FuToken.Return:
+			return ParseReturn();
+		case FuToken.Switch:
+			return ParseSwitch();
+		case FuToken.Throw:
+			return ParseThrow();
+		case FuToken.While:
+			return ParseWhile();
+		default:
+			FuExpr# expr = ParseAssign(true);
+			Expect(FuToken.Semicolon);
+			return expr;
+		}
+	}
+
+	FuCallType ParseCallType!()
+	{
+		switch (this.CurrentToken) {
+		case FuToken.Static:
+			NextToken();
+			return FuCallType.Static;
+		case FuToken.Abstract:
+			NextToken();
+			return FuCallType.Abstract;
+		case FuToken.Virtual:
+			NextToken();
+			return FuCallType.Virtual;
+		case FuToken.Override:
+			NextToken();
+			return FuCallType.Override;
+		case FuToken.Sealed:
+			NextToken();
+			return FuCallType.Sealed;
+		default:
+			return FuCallType.Normal;
+		}
+	}
+
+	void ParseMethod!(FuMethod! method)
+	{
+		method.IsMutator = Eat(FuToken.ExclamationMark);
+		Expect(FuToken.LeftParenthesis);
+		if (!See(FuToken.RightParenthesis)) {
+			do {
+				FuCodeDoc# doc = ParseDoc();
+				FuVar# param = ParseVar(ParseType());
+				param.Documentation = doc;
+				AddSymbol(method.Parameters, param);
+			} while (Eat(FuToken.Comma));
+		}
+		Expect(FuToken.RightParenthesis);
+		method.Throws = Eat(FuToken.Throws);
+		if (method.CallType == FuCallType.Abstract)
+			Expect(FuToken.Semicolon);
+		else if (See(FuToken.FatArrow))
+			method.Body = ParseReturn();
+		else if (Check(FuToken.LeftBrace))
+			method.Body = ParseBlock();
+	}
+
+	static string CallTypeToString(FuCallType callType)
+	{
+		switch (callType) {
+		case FuCallType.Static: return "static";
+		case FuCallType.Normal: return "normal";
+		case FuCallType.Abstract: return "abstract";
+		case FuCallType.Virtual: return "virtual";
+		case FuCallType.Override: return "override";
+		case FuCallType.Sealed: return "sealed";
+		default: assert false;
+		}
+	}
+
+	void ParseClass!(FuCodeDoc# doc, bool isPublic, FuCallType callType)
+	{
+		Expect(FuToken.Class);
+		FuClass# klass = new FuClass { Filename = this.Filename, Line = this.Line, Documentation = doc, IsPublic = isPublic, CallType = callType, Name = this.StringValue };
+		if (Expect(FuToken.Id))
+			AddSymbol(this.Program, klass);
+		if (Eat(FuToken.Colon)) {
+			klass.BaseClassName = this.StringValue;
+			Expect(FuToken.Id);
+		}
+		Expect(FuToken.LeftBrace);
+
+		while (!See(FuToken.RightBrace) && !See(FuToken.EndOfFile)) {
+			doc = ParseDoc();
+
+			FuVisibility visibility;
+			switch (this.CurrentToken) {
+			case FuToken.Internal:
+				visibility = FuVisibility.Internal;
+				NextToken();
+				break;
+			case FuToken.Protected:
+				visibility = FuVisibility.Protected;
+				NextToken();
+				break;
+			case FuToken.Public:
+				visibility = FuVisibility.Public;
+				NextToken();
+				break;
+			default:
+				visibility = FuVisibility.Private;
+				break;
+			}
+
+			if (See(FuToken.Const)) {
+				// const
+				FuConst# konst = ParseConst(visibility);
+				konst.Documentation = doc;
+				AddSymbol(klass, konst);
+				continue;
+			}
+
+			callType = ParseCallType();
+			FuExpr# type = Eat(FuToken.Void) ? this.Program.System.VoidType : ParseType();
+			if (See(FuToken.LeftBrace) && type is FuCallExpr call) {
+				// constructor
+				if (call.Method.Name != klass.Name)
+					ReportError("Method with no return type");
+				else {
+					if (klass.CallType == FuCallType.Static)
+						ReportError("Constructor in a static class");
+					if (callType != FuCallType.Normal)
+						ReportError($"Constructor cannot be {CallTypeToString(callType)}");
+					if (call.Arguments.Count != 0)
+						ReportError("Constructor parameters not supported");
+					if (klass.Constructor != null)
+						ReportError($"Duplicate constructor, already defined in line {klass.Constructor.Line}");
+				}
+				if (visibility == FuVisibility.Private)
+					visibility = FuVisibility.Internal; // TODO
+				klass.Constructor = new FuMethodBase { Line = call.Line, Documentation = doc, Visibility = visibility, Parent = klass,
+					Type = this.Program.System.VoidType, Name = klass.Name, IsMutator = true, Body = ParseBlock() };
+				continue;
+			}
+
+			int line = this.Line;
+			string() name = this.StringValue;
+			if (!Expect(FuToken.Id))
+				continue;
+			if (See(FuToken.LeftParenthesis) || See(FuToken.ExclamationMark)) {
+				// method
+
+				// \ class | static | normal | abstract | sealed
+				// method \|        |        |          |
+				// --------+--------+--------+----------+-------
+				// static  |   +    |   +    |    +     |   +
+				// normal  |   -    |   +    |    +     |   +
+				// abstract|   -    |   -    |    +     |   -
+				// virtual |   -    |   +    |    +     |   -
+				// override|   -    |   +    |    +     |   +
+				// sealed  |   -    |   +    |    +     |   +
+				if (callType == FuCallType.Static || klass.CallType == FuCallType.Abstract) {
+					// ok
+				}
+				else if (klass.CallType == FuCallType.Static)
+					ReportError("Only static methods allowed in a static class");
+				else if (callType == FuCallType.Abstract)
+					ReportError("Abstract methods allowed only in an abstract class");
+				else if (klass.CallType == FuCallType.Sealed && callType == FuCallType.Virtual)
+					ReportError("Virtual methods disallowed in a sealed class");
+				if (visibility == FuVisibility.Private && callType != FuCallType.Static && callType != FuCallType.Normal)
+					ReportError($"{CallTypeToString(callType)} method cannot be private");
+
+				FuMethod# method = new FuMethod { Line = line, Documentation = doc, Visibility = visibility, CallType = callType, TypeExpr = type, Name = name };
+				AddSymbol(klass, method);
+				method.Parameters.Parent = klass;
+				ParseMethod(method);
+				continue;
+			}
+
+			// field
+			if (visibility == FuVisibility.Public)
+				ReportError("Field cannot be public");
+			if (callType != FuCallType.Normal)
+				ReportError($"Field cannot be {CallTypeToString(callType)}");
+			if (type == this.Program.System.VoidType)
+				ReportError("Field cannot be void");
+			FuField# field = new FuField { Line = line, Documentation = doc, Visibility = visibility, TypeExpr = type, Name = name, Value = ParseInitializer() };
+			AddSymbol(klass, field);
+			Expect(FuToken.Semicolon);
+		}
+		Expect(FuToken.RightBrace);
+	}
+
+	void ParseEnum!(FuCodeDoc# doc, bool isPublic)
+	{
+		Expect(FuToken.Enum);
+		bool flags = Eat(FuToken.Asterisk);
+		FuEnum# enu = this.Program.System.NewEnum(flags);
+		enu.Filename = this.Filename;
+		enu.Line = this.Line;
+		enu.Documentation = doc;
+		enu.IsPublic = isPublic;
+		enu.Name = this.StringValue;
+		if (Expect(FuToken.Id))
+			AddSymbol(this.Program, enu);
+		Expect(FuToken.LeftBrace);
+		do {
+			FuConst# konst = new FuConst { Visibility = FuVisibility.Public, Documentation = ParseDoc(), Line = this.Line, Name = this.StringValue, Type = enu };
+			Expect(FuToken.Id);
+			if (Eat(FuToken.Assign))
+				konst.Value = ParseExpr();
+			else if (flags)
+				ReportError("enum* symbol must be assigned a value");
+			AddSymbol(enu, konst);
+		} while (Eat(FuToken.Comma));
+		Expect(FuToken.RightBrace);
+	}
+
+	public void Parse!(string filename, byte[] input, int inputLength)
+	{
+		Open(filename, input, inputLength);
+		while (!See(FuToken.EndOfFile)) {
+			FuCodeDoc# doc = ParseDoc();
+			bool isPublic = Eat(FuToken.Public);
+			switch (this.CurrentToken) {
+			// class
+			case FuToken.Class:
+				ParseClass(doc, isPublic, FuCallType.Normal);
+				break;
+			case FuToken.Static:
+			case FuToken.Abstract:
+			case FuToken.Sealed:
+				ParseClass(doc, isPublic, ParseCallType());
+				break;
+
+			// enum
+			case FuToken.Enum:
+				ParseEnum(doc, isPublic);
+				break;
+
+			// native
+			case FuToken.Native:
+				this.Program.TopLevelNatives.Add(ParseNative().Content);
+				break;
+
+			default:
+				ReportError("Expected class or enum");
+				NextToken();
+				break;
+			}
+		}
+	}
+}

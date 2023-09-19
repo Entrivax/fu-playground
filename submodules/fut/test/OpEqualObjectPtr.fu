@@ -1,0 +1,37 @@
+class Data
+{
+}
+
+class Derived : Data
+{
+}
+
+public class Test
+{
+	Data() Storage;
+	Data#? Dynamic = null; //FAIL: cl
+
+	bool IsNull(bool dyn)
+		=> (dyn ? Dynamic : Storage) == null;
+
+	bool IsThis(Test that)
+		=> this == that;
+
+	int[2] ArrayStorage;
+	int[]#? ArrayDynamic = null;
+
+	bool IsArrayNull(bool dyn)
+		=> (dyn ? ArrayDynamic : ArrayStorage) == null;
+
+	public static bool Run()
+	{
+		Test() o;
+		Derived#? d = new Derived();
+		Data# b = d;
+		Derived r = d;
+		return o.IsNull(true) && !o.IsNull(false)
+			&& o.IsThis(o)
+			&& o.IsArrayNull(true) && !o.IsArrayNull(false)
+			&& b == d && r == d;
+	}
+}

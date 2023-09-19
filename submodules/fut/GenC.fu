@@ -1,0 +1,3579 @@
+// GenC.fu - C code generator
+//
+// Copyright (C) 2011-2023  Piotr Fusik
+//
+// This file is part of Fusion Transpiler,
+// see https://github.com/fusionlanguage/fut
+//
+// Fusion Transpiler is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Fusion Transpiler is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with Fusion Transpiler.  If not, see http://www.gnu.org/licenses/
+
+public class GenC : GenCCpp
+{
+	bool IntTryParse;
+	bool LongTryParse;
+	bool DoubleTryParse;
+	bool StringAssign;
+	bool StringSubstring;
+	bool StringAppend;
+	bool StringIndexOf;
+	bool StringLastIndexOf;
+	bool StringEndsWith;
+	bool StringReplace;
+	bool StringFormat;
+	bool MatchFind;
+	bool MatchPos;
+	bool PtrConstruct;
+	bool SharedMake;
+	bool SharedAddRef;
+	bool SharedRelease;
+	bool SharedAssign;
+	SortedDictionary<string, string>() ListFrees;
+	bool TreeCompareInteger;
+	bool TreeCompareString;
+	SortedSet<FuId>() Compares;
+	SortedSet<FuId>() Contains;
+	List<FuVar>() VarsToDestruct;
+	protected FuClass CurrentClass;
+
+	protected override FuContainerType GetCurrentContainer() => this.CurrentClass;
+	protected override string GetTargetName() => "C";
+
+	protected override void WriteSelfDoc!(FuMethod method)
+	{
+		if (method.CallType == FuCallType.Static)
+			return;
+		Write(" * @param self This <code>");
+		WriteName(method.Parent);
+		WriteLine("</code>.");
+	}
+
+	protected override void IncludeStdInt!()
+	{
+		Include("stdint.h");
+	}
+
+	protected override void IncludeAssert!()
+	{
+		Include("assert.h");
+	}
+
+	protected override void IncludeMath!()
+	{
+		Include("math.h");
+	}
+
+	protected virtual void IncludeStdBool!()
+	{
+		Include("stdbool.h");
+	}
+
+	internal override void VisitLiteralNull!()
+	{
+		Write("NULL");
+	}
+
+	protected virtual void WritePrintfLongPrefix!()
+	{
+		Write("ll");
+	}
+
+	protected override void WritePrintfWidth!(FuInterpolatedPart part)
+	{
+		base.WritePrintfWidth(part);
+		if (IsStringSubstring(part.Argument) != null) {
+			assert part.Precision < 0;
+			Write(".*");
+		}
+		if (part.Argument.Type.Id == FuId.LongType)
+			WritePrintfLongPrefix();
+	}
+
+	protected virtual void WriteInterpolatedStringArgBase!(FuExpr expr)
+	{
+		if (expr.Type.Id == FuId.LongType) {
+			Write("(long long) ");
+			expr.Accept(this, FuPriority.Primary);
+		}
+		else
+			expr.Accept(this, FuPriority.Argument);
+	}
+
+	void WriteStringPtrAddCast!(FuCallExpr call)
+	{
+		if (IsUTF8GetString(call))
+			Write("(const char *) ");
+		WriteStringPtrAdd(call);
+	}
+
+	static bool IsDictionaryClassStgIndexing(FuExpr expr)
+	{
+		return expr is FuBinaryExpr indexing
+			&& indexing.Op == FuToken.LeftBracket
+			&& indexing.Left.Type is FuClassType dict
+			&& dict.Class.TypeParameterCount == 2
+			&& dict.GetValueType() is FuStorageType;
+	}
+
+	void WriteTemporaryOrExpr!(FuExpr expr, FuPriority parent)
+	{
+		int tempId = this.CurrentTemporaries.IndexOf(expr);
+		if (tempId >= 0) {
+			Write("futemp");
+			VisitLiteralLong(tempId);
+		}
+		else
+			expr.Accept(this, parent);
+	}
+
+	void WriteUpcast!(FuClass resultClass, FuSymbol klass)
+	{
+		for (; klass != resultClass; klass = klass.Parent)
+			Write(".base");
+	}
+
+	void WriteClassPtr!(FuClass resultClass, FuExpr expr, FuPriority parent)
+	{
+		switch (expr.Type) {
+		case FuStorageType storage when storage.Class.Id == FuId.None && !IsDictionaryClassStgIndexing(expr):
+			WriteChar('&');
+			WriteTemporaryOrExpr(expr, FuPriority.Primary);
+			WriteUpcast(resultClass, storage.Class);
+			break;
+		case FuClassType ptr when ptr.Class != resultClass:
+			WriteChar('&');
+			WritePostfix(expr, "->base");
+			WriteUpcast(resultClass, ptr.Class.Parent);
+			break;
+		default:
+			expr.Accept(this, parent);
+			break;
+		}
+	}
+
+	protected override void WriteInterpolatedStringArg!(FuExpr expr)
+	{
+		FuCallExpr? call = IsStringSubstring(expr);
+		if (call != null) {
+			GetStringSubstringLength(call).Accept(this, FuPriority.Argument);
+			Write(", ");
+			WriteStringPtrAddCast(call);
+		}
+		else if (expr.Type is FuClassType klass && klass.Class.Id != FuId.StringClass) {
+			// TODO: abstract, virtual, override
+			Write(this.Namespace);
+			Write(klass.Class.Name);
+			Write("_ToString(");
+			WriteClassPtr(klass.Class, expr, FuPriority.Argument);
+			WriteChar(')');
+		}
+		else
+			WriteInterpolatedStringArgBase(expr);
+	}
+
+	internal override void VisitInterpolatedString!(FuInterpolatedString expr, FuPriority parent)
+	{
+		Include("stdarg.h");
+		Include("stdio.h");
+		this.StringFormat = true;
+		Write("FuString_Format(");
+		WritePrintf(expr, false);
+	}
+
+	protected virtual void WriteCamelCaseNotKeyword!(string name)
+	{
+		switch (name) {
+		case "this":
+			Write("self");
+			break;
+		case "Asm":
+		case "Assert":
+		case "Auto":
+		case "Bool":
+		case "Break":
+		case "Byte":
+		case "Case":
+		case "Char":
+		case "Class":
+		case "Const":
+		case "Continue":
+		case "Default":
+		case "Do":
+		case "Double":
+		case "Else":
+		case "Enum":
+		case "Extern":
+		case "False":
+		case "Float":
+		case "For":
+		case "Foreach":
+		case "Goto":
+		case "If":
+		case "Inline":
+		case "Int":
+		case "Long":
+		case "Register":
+		case "Restrict":
+		case "Return":
+		case "Short":
+		case "Signed":
+		case "Sizeof":
+		case "Static":
+		case "Struct":
+		case "Switch":
+		case "True":
+		case "Typedef":
+		case "Typeof": // gcc extension
+		case "Union":
+		case "Unsigned":
+		case "Void":
+		case "Volatile":
+		case "While":
+		case "asm":
+		case "auto":
+		case "char":
+		case "extern":
+		case "goto":
+		case "inline":
+		case "register":
+		case "restrict":
+		case "signed":
+		case "sizeof":
+		case "struct":
+		case "typedef":
+		case "typeof": // gcc extension
+		case "union":
+		case "unsigned":
+		case "volatile":
+			WriteCamelCase(name);
+			WriteChar('_');
+			break;
+		default:
+			WriteCamelCase(name);
+			break;
+		}
+	}
+
+	protected override void WriteName!(FuSymbol symbol)
+	{
+		switch (symbol) {
+		case FuContainerType _:
+			Write(this.Namespace);
+			Write(symbol.Name);
+			break;
+		case FuMethod _:
+			Write(this.Namespace);
+			Write(symbol.Parent.Name);
+			WriteChar('_');
+			Write(symbol.Name);
+			break;
+		case FuConst _:
+			if (symbol.Parent is FuContainerType) {
+				Write(this.Namespace);
+				Write(symbol.Parent.Name);
+				WriteChar('_');
+			}
+			WriteUppercaseWithUnderscores(symbol.Name);
+			break;
+		default:
+			WriteCamelCaseNotKeyword(symbol.Name);
+			break;
+		}
+	}
+
+	void WriteForeachArrayIndexing!(FuForeach forEach, FuSymbol symbol)
+	{
+		forEach.Collection.Accept(this, FuPriority.Primary);
+		WriteChar('[');
+		WriteCamelCaseNotKeyword(symbol.Name);
+		WriteChar(']');
+	}
+
+	void WriteSelfForField!(FuSymbol fieldClass) // FuClass
+	{
+		Write("self->");
+		for (FuSymbol klass = this.CurrentClass; klass != fieldClass; klass = klass.Parent)
+			Write("base.");
+	}
+
+	protected override void WriteLocalName!(FuSymbol symbol, FuPriority parent)
+	{
+		if (symbol.Parent is FuForeach forEach) {
+			assert forEach.Collection.Type is FuClassType klass;
+			switch (klass.Class.Id) {
+			case FuId.StringClass:
+			case FuId.ListClass:
+				if (parent == FuPriority.Primary)
+					WriteChar('(');
+				WriteChar('*');
+				WriteCamelCaseNotKeyword(symbol.Name);
+				if (parent == FuPriority.Primary)
+					WriteChar(')');
+				return;
+			case FuId.ArrayStorageClass:
+				if (klass.GetElementType() is FuStorageType) {
+					if (parent > FuPriority.Add)
+						WriteChar('(');
+					forEach.Collection.Accept(this, FuPriority.Add);
+					Write(" + ");
+					WriteCamelCaseNotKeyword(symbol.Name);
+					if (parent > FuPriority.Add)
+						WriteChar(')');
+				}
+				else
+					WriteForeachArrayIndexing(forEach, symbol);
+				return;
+			default:
+				break;
+			}
+		}
+		if (symbol is FuField)
+			WriteSelfForField(symbol.Parent);
+		WriteName(symbol);
+	}
+
+	void WriteMatchProperty!(FuSymbolReference expr, int which)
+	{
+		this.MatchPos = true;
+		Write("FuMatch_GetPos(");
+		expr.Left.Accept(this, FuPriority.Argument);
+		Write(", ");
+		VisitLiteralLong(which);
+		WriteChar(')');
+	}
+
+	internal override void VisitSymbolReference!(FuSymbolReference expr, FuPriority parent)
+	{
+		switch (expr.Symbol.Id) {
+		case FuId.StringLength:
+			WriteStringLength(expr.Left);
+			break;
+		case FuId.ConsoleError:
+			Include("stdio.h");
+			Write("stderr");
+			break;
+		case FuId.ListCount:
+		case FuId.StackCount:
+			WritePostfix(expr.Left, "->len");
+			break;
+		case FuId.QueueCount:
+			expr.Left.Accept(this, FuPriority.Primary);
+			if (expr.Left.Type is FuStorageType)
+				WriteChar('.');
+			else
+				Write("->");
+			Write("length");
+			break;
+		case FuId.HashSetCount:
+		case FuId.DictionaryCount:
+			WriteCall("g_hash_table_size", expr.Left);
+			break;
+		case FuId.SortedSetCount:
+		case FuId.SortedDictionaryCount:
+			WriteCall("g_tree_nnodes", expr.Left);
+			break;
+		case FuId.MatchStart:
+			WriteMatchProperty(expr, 0);
+			break;
+		case FuId.MatchEnd:
+			WriteMatchProperty(expr, 1);
+			break;
+		case FuId.MatchLength:
+			WriteMatchProperty(expr, 2);
+			break;
+		case FuId.MatchValue:
+			Write("g_match_info_fetch(");
+			expr.Left.Accept(this, FuPriority.Argument);
+			Write(", 0)");
+			break;
+		default:
+			if (expr.Left == null || expr.Symbol is FuConst)
+				WriteLocalName(expr.Symbol, parent);
+			else if (IsDictionaryClassStgIndexing(expr.Left)) {
+				WritePostfix(expr.Left, "->");
+				WriteName(expr.Symbol);
+			}
+			else if (expr.Left is FuSymbolReference symbol && symbol.Symbol.Parent is FuForeach forEach && forEach.Collection.Type is FuArrayStorageType array) {
+				// not essential, but a[i].foo looks better than (a + i)->foo
+				WriteForeachArrayIndexing(forEach, symbol.Symbol);
+				WriteMemberAccess(array.GetElementType(), expr.Symbol.Parent);
+				WriteName(expr.Symbol);
+			}
+			else
+				base.VisitSymbolReference(expr, parent);
+			break;
+		}
+	}
+
+	void WriteGlib!(string s)
+	{
+		Include("glib.h");
+		Write(s);
+	}
+
+	protected virtual void WriteStringPtrType!()
+	{
+		Write("const char *");
+	}
+
+	protected virtual void WriteClassType!(FuClassType klass, bool space)
+	{
+		switch (klass.Class.Id) {
+		case FuId.None:
+			if (!(klass is FuReadWriteClassType))
+				Write("const ");
+			WriteName(klass.Class);
+			if (!(klass is FuStorageType))
+				Write(" *");
+			else if (space)
+				WriteChar(' ');
+			break;
+		case FuId.StringClass:
+			if (klass.Id == FuId.StringStorageType)
+				Write("char *");
+			else
+				WriteStringPtrType();
+			break;
+		case FuId.ListClass:
+		case FuId.StackClass:
+			WriteGlib("GArray *");
+			break;
+		case FuId.QueueClass:
+			WriteGlib("GQueue ");
+			if (!(klass is FuStorageType))
+				WriteChar('*');
+			break;
+		case FuId.HashSetClass:
+		case FuId.DictionaryClass:
+			WriteGlib("GHashTable *");
+			break;
+		case FuId.SortedSetClass:
+		case FuId.SortedDictionaryClass:
+			WriteGlib("GTree *");
+			break;
+		case FuId.TextWriterClass:
+			Include("stdio.h");
+			Write("FILE *");
+			break;
+		case FuId.RegexClass:
+			if (!(klass is FuReadWriteClassType))
+				Write("const ");
+			WriteGlib("GRegex *");
+			break;
+		case FuId.MatchClass:
+			if (!(klass is FuReadWriteClassType))
+				Write("const ");
+			WriteGlib("GMatchInfo *");
+			break;
+		case FuId.LockClass:
+			NotYet(klass, "Lock");
+			Include("threads.h");
+			Write("mtx_t ");
+			break;
+		default:
+			NotSupported(klass, klass.Class.Name);
+			break;
+		}
+	}
+
+	void WriteArrayPrefix!(FuType type)
+	{
+		if (type is FuClassType array && array.IsArray()) {
+			WriteArrayPrefix(array.GetElementType());
+			if (!(type is FuArrayStorageType)) {
+				if (array.GetElementType() is FuArrayStorageType)
+					WriteChar('(');
+				if (!(type is FuReadWriteClassType))
+					Write("const ");
+				WriteChar('*');
+			}
+		}
+	}
+
+	void StartDefinition!(FuType type, bool promote, bool space)
+	{
+		FuType baseType = type.GetBaseType();
+		switch (baseType) {
+		case FuIntegerType _:
+			WriteNumericType(GetTypeId(baseType, promote && type == baseType));
+			if (space)
+				WriteChar(' ');
+			break;
+		case FuEnum _:
+			if (baseType.Id == FuId.BoolType) {
+				IncludeStdBool();
+				Write("bool");
+			}
+			else
+				WriteName(baseType);
+			if (space)
+				WriteChar(' ');
+			break;
+		case FuClassType klass:
+			WriteClassType(klass, space);
+			break;
+		default:
+			Write(baseType.Name);
+			if (space)
+				WriteChar(' ');
+			break;
+		}
+		WriteArrayPrefix(type);
+	}
+
+	void EndDefinition!(FuType type)
+	{
+		while (type.IsArray()) {
+			FuType elementType = type.AsClassType().GetElementType();
+			if (type is FuArrayStorageType arrayStorage) {
+				WriteChar('[');
+				VisitLiteralLong(arrayStorage.Length);
+				WriteChar(']');
+			}
+			else if (elementType is FuArrayStorageType)
+				WriteChar(')');
+			type = elementType;
+		}
+	}
+
+	void WriteReturnType!(FuMethod method)
+	{
+		if (method.Type.Id == FuId.VoidType && method.Throws) {
+			IncludeStdBool();
+			Write("bool ");
+		}
+		else
+			StartDefinition(method.Type, true, true);
+	}
+
+	protected override void WriteType!(FuType type, bool promote)
+	{
+		StartDefinition(type, promote, type is FuClassType arrayPtr && arrayPtr.Class.Id == FuId.ArrayPtrClass);
+		EndDefinition(type);
+	}
+
+	protected override void WriteTypeAndName!(FuNamedValue value)
+	{
+		StartDefinition(value.Type, true, true);
+		WriteName(value);
+		EndDefinition(value.Type);
+	}
+
+	void WriteDynamicArrayCast!(FuType elementType)
+	{
+		WriteChar('(');
+		StartDefinition(elementType, false, true);
+		Write(elementType.IsArray() ? "(*)" : "*");
+		EndDefinition(elementType);
+		Write(") ");
+	}
+
+	void WriteXstructorPtr!(bool need, FuClass klass, string name)
+	{
+		if (need) {
+			Write("(FuMethodPtr) ");
+			WriteName(klass);
+			WriteChar('_');
+			Write(name);
+		}
+		else
+			Write("NULL");
+	}
+
+	static bool IsHeapAllocated(FuType type) => type.Id == FuId.StringStorageType || type is FuDynamicPtrType;
+
+	static bool NeedToDestructType(FuType type)
+	{
+		if (IsHeapAllocated(type))
+			return true;
+		if (type is FuStorageType storage) {
+			switch (storage.Class.Id) {
+			case FuId.ListClass:
+			case FuId.StackClass:
+			case FuId.HashSetClass:
+			case FuId.SortedSetClass:
+			case FuId.DictionaryClass:
+			case FuId.SortedDictionaryClass:
+			case FuId.MatchClass:
+			case FuId.LockClass:
+				return true;
+			default:
+				return NeedsDestructor(storage.Class);
+			}
+		}
+		return false;
+	}
+
+	static bool NeedToDestruct(FuSymbol symbol)
+	{
+		FuType type = symbol.Type;
+		while (type is FuArrayStorageType array)
+			type = array.GetElementType();
+		return NeedToDestructType(type);
+	}
+
+	static bool NeedsDestructor(FuClass klass)
+	{
+		for (FuSymbol? symbol = klass.First; symbol != null; symbol = symbol.Next) {
+			if (symbol is FuField field && NeedToDestruct(field))
+				return true;
+		}
+		return klass.Parent is FuClass baseClass && NeedsDestructor(baseClass);
+	}
+
+	void WriteXstructorPtrs!(FuClass klass)
+	{
+		WriteXstructorPtr(NeedsConstructor(klass), klass, "Construct");
+		Write(", ");
+		WriteXstructorPtr(NeedsDestructor(klass), klass, "Destruct");
+	}
+
+	protected override void WriteNewArray!(FuType elementType, FuExpr lengthExpr, FuPriority parent)
+	{
+		this.SharedMake = true;
+		if (parent > FuPriority.Mul)
+			WriteChar('(');
+		WriteDynamicArrayCast(elementType);
+		Write("FuShared_Make(");
+		lengthExpr.Accept(this, FuPriority.Argument);
+		Write(", sizeof(");
+		WriteType(elementType, false);
+		Write("), ");
+		switch (elementType) {
+		case FuStringStorageType _:
+			this.PtrConstruct = true;
+			this.ListFrees["String"] = "free(*(void **) ptr)";
+			Write("(FuMethodPtr) FuPtr_Construct, FuList_FreeString");
+			break;
+		case FuStorageType storage:
+			WriteXstructorPtrs(storage.Class);
+			break;
+		case FuDynamicPtrType _:
+			this.PtrConstruct = true;
+			this.SharedRelease = true;
+			this.ListFrees["Shared"] = "FuShared_Release(*(void **) ptr)";
+			Write("(FuMethodPtr) FuPtr_Construct, FuList_FreeShared");
+			break;
+		default:
+			Write("NULL, NULL");
+			break;
+		}
+		WriteChar(')');
+		if (parent > FuPriority.Mul)
+			WriteChar(')');
+	}
+
+	static bool IsNewString(FuExpr expr)
+	{
+		return expr is FuInterpolatedString
+			|| (expr is FuBinaryExpr binary && expr.Type.Id == FuId.StringStorageType && binary.Op == FuToken.Plus)
+			|| (expr is FuCallExpr call && expr.Type.Id == FuId.StringStorageType &&(call.Method.Symbol.Id != FuId.StringSubstring || call.Arguments.Count == 2));
+	}
+
+	void WriteStringStorageValue!(FuExpr expr)
+	{
+		FuCallExpr? call = IsStringSubstring(expr);
+		if (call != null) {
+			Include("string.h");
+			this.StringSubstring = true;
+			Write("FuString_Substring(");
+			WriteStringPtrAddCast(call);
+			Write(", ");
+			GetStringSubstringLength(call).Accept(this, FuPriority.Argument);
+			WriteChar(')');
+		}
+		else if (IsNewString(expr))
+			expr.Accept(this, FuPriority.Argument);
+		else {
+			Include("string.h");
+			WriteCall("strdup", expr);
+		}
+	}
+
+	protected override void WriteArrayStorageInit!(FuArrayStorageType array, FuExpr value)
+	{
+		switch (value) {
+		case null:
+			if (IsHeapAllocated(array.GetStorageType()))
+				Write(" = { NULL }");
+			break;
+		case FuLiteral literal when literal.IsDefaultValue():
+			Write(" = { ");
+			literal.Accept(this, FuPriority.Argument);
+			Write(" }");
+			break;
+		default:
+			assert false;
+		}
+	}
+
+	string() GetDictionaryDestroy!(FuType type)
+	{
+		switch (type) {
+		case FuStringStorageType _:
+		case FuArrayStorageType _:
+			return "free";
+		case FuStorageType storage:
+			switch (storage.Class.Id) {
+			case FuId.ListClass:
+			case FuId.StackClass:
+				return "(GDestroyNotify) g_array_unref";
+			case FuId.HashSetClass:
+			case FuId.DictionaryClass:
+				return "(GDestroyNotify) g_hash_table_unref";
+			case FuId.SortedSetClass:
+			case FuId.SortedDictionaryClass:
+				return "(GDestroyNotify) g_tree_unref";
+			default:
+				return NeedsDestructor(storage.Class) ? $"(GDestroyNotify) {storage.Class.Name}_Delete" /* TODO: emit */ : "free";
+			}
+		case FuDynamicPtrType _:
+			this.SharedRelease = true;
+			return "FuShared_Release";
+		default:
+			return "NULL";
+		}
+	}
+
+	void WriteHashEqual!(FuType keyType)
+	{
+		Write(keyType is FuStringType ? "g_str_hash, g_str_equal" : "NULL, NULL");
+	}
+
+	void WriteNewHashTable!(FuType keyType, string valueDestroy)
+	{
+		Write("g_hash_table_new");
+		string() keyDestroy = GetDictionaryDestroy(keyType);
+		if (keyDestroy == "NULL" && valueDestroy == "NULL") {
+			WriteChar('(');
+			WriteHashEqual(keyType);
+		}
+		else {
+			Write("_full(");
+			WriteHashEqual(keyType);
+			Write(", ");
+			Write(keyDestroy);
+			Write(", ");
+			Write(valueDestroy);
+		}
+		WriteChar(')');
+	}
+
+	void WriteNewTree!(FuType keyType, string valueDestroy)
+	{
+		if (keyType.Id == FuId.StringPtrType && valueDestroy == "NULL")
+			Write("g_tree_new((GCompareFunc) strcmp");
+		else {
+			Write("g_tree_new_full(FuTree_Compare");
+			switch (keyType) {
+			case FuIntegerType _:
+				this.TreeCompareInteger = true;
+				Write("Integer");
+				break;
+			case FuStringType _:
+				this.TreeCompareString = true;
+				Write("String");
+				break;
+			default:
+				NotSupported(keyType, keyType.ToString());
+				break;
+			}
+			Write(", NULL, ");
+			Write(GetDictionaryDestroy(keyType));
+			Write(", ");
+			Write(valueDestroy);
+		}
+		WriteChar(')');
+	}
+
+	protected override void WriteNew!(FuReadWriteClassType klass, FuPriority parent)
+	{
+		switch (klass.Class.Id) {
+		case FuId.ListClass:
+		case FuId.StackClass:
+			Write("g_array_new(FALSE, FALSE, sizeof(");
+			WriteType(klass.GetElementType(), false);
+			Write("))");
+			break;
+		case FuId.QueueClass:
+			Write("G_QUEUE_INIT");
+			break;
+		case FuId.HashSetClass:
+			WriteNewHashTable(klass.GetElementType(), "NULL");
+			break;
+		case FuId.SortedSetClass:
+			WriteNewTree(klass.GetElementType(), "NULL");
+			break;
+		case FuId.DictionaryClass:
+			WriteNewHashTable(klass.GetKeyType(), GetDictionaryDestroy(klass.GetValueType()));
+			break;
+		case FuId.SortedDictionaryClass:
+			WriteNewTree(klass.GetKeyType(), GetDictionaryDestroy(klass.GetValueType()));
+			break;
+		default:
+			this.SharedMake = true;
+			if (parent > FuPriority.Mul)
+				WriteChar('(');
+			WriteStaticCastType(klass);
+			Write("FuShared_Make(1, sizeof(");
+			WriteName(klass.Class);
+			Write("), ");
+			WriteXstructorPtrs(klass.Class);
+			WriteChar(')');
+			if (parent > FuPriority.Mul)
+				WriteChar(')');
+			break;
+		}
+	}
+
+	protected override void WriteStorageInit!(FuNamedValue def)
+	{
+		if (def.Type.AsClassType().Class.TypeParameterCount > 0) // built-in collections
+			base.WriteStorageInit(def);
+	}
+
+	protected override void WriteVarInit!(FuNamedValue def)
+	{
+		if (def.Value == null && IsHeapAllocated(def.Type))
+			Write(" = NULL");
+		else
+			base.WriteVarInit(def);
+	}
+
+	void WriteAssignTemporary!(FuType type, FuExpr? expr)
+	{
+		Write(" = ");
+		if (expr != null)
+			WriteCoerced(type, expr, FuPriority.Argument);
+		else
+			WriteNewStorage(type);
+	}
+
+	int WriteCTemporary!(FuType type, FuExpr? expr)
+	{
+		EnsureChildBlock();
+		bool assign = expr != null || (type is FuClassType klass && (klass.Class.Id == FuId.ListClass || klass.Class.Id == FuId.DictionaryClass || klass.Class.Id == FuId.SortedDictionaryClass));
+		int id = this.CurrentTemporaries.IndexOf(type);
+		if (id < 0) {
+			id = this.CurrentTemporaries.Count;
+			StartDefinition(type, false, true);
+			Write("futemp");
+			VisitLiteralLong(id);
+			EndDefinition(type);
+			if (assign)
+				WriteAssignTemporary(type, expr);
+			WriteCharLine(';');
+			this.CurrentTemporaries.Add(expr);
+		}
+		else if (assign) {
+			Write("futemp");
+			VisitLiteralLong(id);
+			WriteAssignTemporary(type, expr);
+			WriteCharLine(';');
+			this.CurrentTemporaries[id] = expr;
+		}
+		return id;
+	}
+
+	void WriteStorageTemporary!(FuExpr expr)
+	{
+		if (IsNewString(expr)
+		 || (expr is FuCallExpr && expr.Type is FuStorageType))
+			WriteCTemporary(expr.Type, expr);
+	}
+
+	void WriteCTemporaries!(FuExpr expr)
+	{
+		switch (expr) {
+		case FuVar def:
+			if (def.Value != null)
+				WriteCTemporaries(def.Value);
+			break;
+		case FuAggregateInitializer init:
+			foreach (FuExpr item in init.Items) {
+				assert item is FuBinaryExpr assign;
+				WriteCTemporaries(assign.Right);
+			}
+			break;
+		case FuLiteral _:
+		case FuLambdaExpr _:
+			break;
+		case FuInterpolatedString interp:
+			foreach (FuInterpolatedPart part in interp.Parts)
+				WriteCTemporaries(part.Argument);
+			break;
+		case FuSymbolReference symbol:
+			if (symbol.Left != null)
+				WriteCTemporaries(symbol.Left);
+			break;
+		case FuUnaryExpr unary:
+			if (unary.Inner != null) // new C()
+				WriteCTemporaries(unary.Inner);
+			break;
+		case FuBinaryExpr binary:
+			WriteCTemporaries(binary.Left);
+			if (IsStringSubstring(binary.Left) == null)
+				WriteStorageTemporary(binary.Left);
+			WriteCTemporaries(binary.Right);
+			if (binary.Op != FuToken.Assign)
+				WriteStorageTemporary(binary.Right);
+			break;
+		case FuSelectExpr select:
+			WriteCTemporaries(select.Cond);
+			break;
+		case FuCallExpr call:
+			if (call.Method.Left != null) {
+				WriteCTemporaries(call.Method.Left);
+				WriteStorageTemporary(call.Method.Left);
+			}
+			assert call.Method.Symbol is FuMethod method;
+			FuVar? param = method.Parameters.FirstParameter();
+			foreach (FuExpr arg in call.Arguments) {
+				WriteCTemporaries(arg);
+				if (call.Method.Symbol.Id != FuId.ConsoleWrite && call.Method.Symbol.Id != FuId.ConsoleWriteLine && !(param.Type is FuStorageType))
+					WriteStorageTemporary(arg);
+				param = param.NextParameter();
+			}
+			break;
+		default:
+			assert false;
+		}
+	}
+
+	static bool HasTemporariesToDestruct(FuExpr expr)
+	{
+		switch (expr) {
+		case FuAggregateInitializer init:
+			return init.Items.Any(field => HasTemporariesToDestruct(field));
+		case FuLiteral _:
+		case FuLambdaExpr _:
+			return false;
+		case FuInterpolatedString interp:
+			return interp.Parts.Any(part => HasTemporariesToDestruct(part.Argument));
+		case FuSymbolReference symbol:
+			return symbol.Left != null && HasTemporariesToDestruct(symbol.Left);
+		case FuUnaryExpr unary:
+			return unary.Inner != null && HasTemporariesToDestruct(unary.Inner);
+		case FuBinaryExpr binary:
+			return HasTemporariesToDestruct(binary.Left) || (binary.Op != FuToken.Is && HasTemporariesToDestruct(binary.Right));
+		case FuSelectExpr select:
+			return HasTemporariesToDestruct(select.Cond);
+		case FuCallExpr call:
+			return (call.Method.Left != null && (HasTemporariesToDestruct(call.Method.Left) || IsNewString(call.Method.Left)))
+				|| call.Arguments.Any(arg => HasTemporariesToDestruct(arg) || IsNewString(arg));
+		default:
+			assert false;
+		}
+	}
+
+	protected override void CleanupTemporary!(int i, FuExpr temp)
+	{
+		if (temp.Type.Id == FuId.StringStorageType) {
+			Write("free(futemp");
+			VisitLiteralLong(i);
+			WriteLine(");");
+		}
+	}
+
+	protected override void WriteVar!(FuNamedValue def)
+	{
+		base.WriteVar(def);
+		if (NeedToDestruct(def)) {
+			assert def is FuVar local;
+			this.VarsToDestruct.Add(local);
+		}
+	}
+
+	void WriteGPointerCast!(FuType type, FuExpr expr)
+	{
+		if (type is FuNumericType || type is FuEnum) {
+			Write("GINT_TO_POINTER(");
+			expr.Accept(this, FuPriority.Argument);
+			WriteChar(')');
+		}
+		else if (type.Id == FuId.StringPtrType && expr.Type.Id == FuId.StringPtrType) {
+			Write("(gpointer) ");
+			expr.Accept(this, FuPriority.Primary);
+		}
+		else
+			WriteCoerced(type, expr, FuPriority.Argument);
+	}
+
+	void WriteGConstPointerCast!(FuExpr expr)
+	{
+		if (expr.Type is FuClassType && !(expr.Type is FuStorageType))
+			expr.Accept(this, FuPriority.Argument);
+		else {
+			Write("(gconstpointer) ");
+			expr.Accept(this, FuPriority.Primary);
+		}
+	}
+
+	void WriteQueueObject!(FuExpr obj)
+	{
+		if (obj.Type is FuStorageType) {
+			WriteChar('&');
+			obj.Accept(this, FuPriority.Primary);
+		}
+		else
+			obj.Accept(this, FuPriority.Argument);
+	}
+
+	void WriteQueueGet!(string function, FuExpr obj, FuPriority parent)
+	{
+		FuType elementType = obj.Type.AsClassType().GetElementType();
+		bool parenthesis;
+		if (parent == FuPriority.Statement)
+			parenthesis = false;
+		else if (elementType is FuIntegerType && elementType.Id != FuId.LongType) {
+			Write("GPOINTER_TO_INT(");
+			parenthesis = true;
+		}
+		else {
+			parenthesis = parent > FuPriority.Mul;
+			if (parenthesis)
+				WriteChar('(');
+			WriteStaticCastType(elementType);
+		}
+		Write(function);
+		WriteChar('(');
+		WriteQueueObject(obj);
+		WriteChar(')');
+		if (parenthesis)
+			WriteChar(')');
+	}
+
+	void StartDictionaryInsert!(FuExpr dict, FuExpr key)
+	{
+		assert dict.Type is FuClassType type;
+		Write(type.Class.Id == FuId.SortedDictionaryClass ? "g_tree_insert(" : "g_hash_table_insert(");
+		dict.Accept(this, FuPriority.Argument);
+		Write(", ");
+		WriteGPointerCast(type.GetKeyType(), key);
+		Write(", ");
+	}
+
+	protected override void WriteAssign!(FuBinaryExpr expr, FuPriority parent)
+	{
+		if (expr.Left is FuBinaryExpr indexing
+		 && indexing.Op == FuToken.LeftBracket
+		 && indexing.Left.Type is FuClassType dict
+		 && dict.Class.TypeParameterCount == 2) {
+			StartDictionaryInsert(indexing.Left, indexing.Right);
+			WriteGPointerCast(dict.GetValueType(), expr.Right);
+			WriteChar(')');
+		}
+		else if (expr.Left.Type.Id == FuId.StringStorageType) {
+			FuExpr? length = IsTrimSubstring(expr);
+			if (length != null && parent == FuPriority.Statement) {
+				WriteIndexing(expr.Left, length);
+				Write(" = '\\0'");
+			}
+			else {
+				this.StringAssign = true;
+				Write("FuString_Assign(&");
+				expr.Left.Accept(this, FuPriority.Primary);
+				Write(", ");
+				WriteStringStorageValue(expr.Right);
+				WriteChar(')');
+			}
+		}
+		else if (expr.Left.Type is FuDynamicPtrType dynamic) {
+			if (dynamic.Class.Id == FuId.RegexClass) {
+				// TODO: only if previously assigned non-null
+				// Write("g_regex_unref(");
+				// expr.Left.Accept(this, FuPriority.Argument);
+				// WriteLine(");");
+				base.WriteAssign(expr, parent);
+			}
+			else {
+				this.SharedAssign = true;
+				Write("FuShared_Assign((void **) &");
+				expr.Left.Accept(this, FuPriority.Primary);
+				Write(", ");
+				if (expr.Right is FuSymbolReference) {
+					this.SharedAddRef = true;
+					Write("FuShared_AddRef(");
+					expr.Right.Accept(this, FuPriority.Argument);
+					WriteChar(')');
+				}
+				else
+					expr.Right.Accept(this, FuPriority.Argument);
+				WriteChar(')');
+			}
+		}
+		else
+			base.WriteAssign(expr, parent);
+	}
+
+	static FuMethod? GetThrowingMethod(FuExpr expr)
+	{
+		switch (expr) {
+		case FuBinaryExpr binary when binary.Op == FuToken.Assign:
+			return GetThrowingMethod(binary.Right);
+		case FuCallExpr call:
+			assert call.Method.Symbol is FuMethod method;
+			return method.Throws ? method : null;
+		default:
+			return null;
+		}
+	}
+
+	static bool HasListDestroy(FuType type)
+	{
+		return type is FuStorageType list
+			&& (list.Class.Id == FuId.ListClass || list.Class.Id == FuId.StackClass)
+			&& NeedToDestructType(list.GetElementType());
+	}
+
+	protected override bool HasInitCode(FuNamedValue def)
+	{
+		if (def.IsAssignableStorage())
+			return false;
+		return (def is FuField && (def.Value != null || IsHeapAllocated(def.Type.GetStorageType()) || (def.Type is FuClassType klass && (klass.Class.Id == FuId.ListClass || klass.Class.Id == FuId.DictionaryClass || klass.Class.Id == FuId.SortedDictionaryClass))))
+			|| GetThrowingMethod(def.Value) != null
+			|| (def.Type.GetStorageType() is FuStorageType storage && (storage.Class.Id == FuId.LockClass || NeedsConstructor(storage.Class)))
+			|| HasListDestroy(def.Type)
+			|| base.HasInitCode(def);
+	}
+
+	FuPriority StartForwardThrow!(FuMethod throwingMethod)
+	{
+		Write("if (");
+		switch (throwingMethod.Type.Id) {
+		case FuId.FloatType:
+		case FuId.DoubleType:
+			IncludeMath();
+			Write("isnan(");
+			return FuPriority.Argument;
+		case FuId.VoidType:
+			WriteChar('!');
+			return FuPriority.Primary;
+		default:
+			return FuPriority.Equality;
+		}
+	}
+
+	void WriteDestruct!(FuSymbol symbol)
+	{
+		if (!NeedToDestruct(symbol))
+			return;
+		EnsureChildBlock();
+		FuType type = symbol.Type;
+		int nesting = 0;
+		while (type is FuArrayStorageType array) {
+			Write("for (int _i");
+			VisitLiteralLong(nesting);
+			Write(" = ");
+			VisitLiteralLong(array.Length - 1);
+			Write("; _i");
+			VisitLiteralLong(nesting);
+			Write(" >= 0; _i");
+			VisitLiteralLong(nesting);
+			WriteLine("--)");
+			this.Indent++;
+			nesting++;
+			type = array.GetElementType();
+		}
+		bool arrayFree = false;
+		switch (type) {
+		case FuDynamicPtrType dynamic:
+			if (dynamic.Class.Id == FuId.RegexClass)
+				Write("g_regex_unref(");
+			else {
+				this.SharedRelease = true;
+				Write("FuShared_Release(");
+			}
+			break;
+		case FuStorageType storage:
+			switch (storage.Class.Id) {
+			case FuId.ListClass:
+			case FuId.StackClass:
+				Write("g_array_free(");
+				arrayFree = true;
+				break;
+			case FuId.QueueClass:
+				Write("g_queue_clear(&");
+				break;
+			case FuId.HashSetClass:
+			case FuId.DictionaryClass:
+				Write("g_hash_table_unref(");
+				break;
+			case FuId.SortedSetClass:
+			case FuId.SortedDictionaryClass:
+				Write("g_tree_unref(");
+				break;
+			case FuId.MatchClass:
+				Write("g_match_info_free(");
+				break;
+			case FuId.LockClass:
+				Write("mtx_destroy(&");
+				break;
+			default:
+				WriteName(storage.Class);
+				Write("_Destruct(&");
+				break;
+			}
+			break;
+		default:
+			Write("free(");
+			break;
+		}
+		WriteLocalName(symbol, FuPriority.Primary);
+		for (int i = 0; i < nesting; i++) {
+			Write("[_i");
+			VisitLiteralLong(i);
+			WriteChar(']');
+		}
+		if (arrayFree)
+			Write(", TRUE");
+		WriteLine(");");
+		this.Indent -= nesting;
+	}
+
+	void WriteDestructAll!(FuVar? exceptVar = null)
+	{
+		for (int i = this.VarsToDestruct.Count; --i >= 0; ) {
+			FuVar def = this.VarsToDestruct[i];
+			if (def != exceptVar)
+				WriteDestruct(def);
+		}
+	}
+
+	void WriteThrowReturnValue!()
+	{
+		if (this.CurrentMethod.Type is FuNumericType) {
+			if (this.CurrentMethod.Type is FuIntegerType)
+				Write("-1");
+			else {
+				IncludeMath();
+				Write("NAN");
+			}
+		}
+		else if (this.CurrentMethod.Type.Id == FuId.VoidType)
+			Write("false");
+		else
+			Write("NULL");
+	}
+
+	void WriteThrow!()
+	{
+		WriteDestructAll();
+		Write("return ");
+		WriteThrowReturnValue();
+		WriteCharLine(';');
+	}
+
+	void EndForwardThrow!(FuMethod throwingMethod)
+	{
+		switch (throwingMethod.Type.Id) {
+		case FuId.FloatType:
+		case FuId.DoubleType:
+			WriteChar(')');
+			break;
+		case FuId.VoidType:
+			break;
+		default:
+			Write(throwingMethod.Type is FuIntegerType ? " == -1" : " == NULL");
+			break;
+		}
+		WriteChar(')');
+		if (this.VarsToDestruct.Count > 0) {
+			WriteChar(' ');
+			OpenBlock();
+			WriteThrow();
+			CloseBlock();
+		}
+		else {
+			WriteNewLine();
+			this.Indent++;
+			WriteThrow();
+			this.Indent--;
+		}
+	}
+
+	protected override void WriteInitCode!(FuNamedValue def)
+	{
+		if (!HasInitCode(def))
+			return;
+		FuType type = def.Type;
+		int nesting = 0;
+		while (type is FuArrayStorageType array) {
+			OpenLoop("int", nesting++, array.Length);
+			type = array.GetElementType();
+		}
+		if (type is FuStorageType lok && lok.Class.Id == FuId.LockClass) {
+			Write("mtx_init(&");
+			WriteArrayElement(def, nesting);
+			WriteLine(", mtx_plain | mtx_recursive);");
+		}
+		else if (type is FuStorageType storage && NeedsConstructor(storage.Class)) {
+			WriteName(storage.Class);
+			Write("_Construct(&");
+			WriteArrayElement(def, nesting);
+			WriteLine(");");
+		}
+		else {
+			if (def is FuField) {
+				WriteArrayElement(def, nesting);
+				if (nesting > 0) {
+					Write(" = ");
+					if (IsHeapAllocated(type))
+						Write("NULL");
+					else
+						def.Value.Accept(this, FuPriority.Argument);
+				}
+				else
+					WriteVarInit(def);
+				WriteCharLine(';');
+			}
+			FuMethod? throwingMethod = GetThrowingMethod(def.Value);
+			if (throwingMethod != null) {
+				StartForwardThrow(throwingMethod);
+				WriteArrayElement(def, nesting);
+				EndForwardThrow(throwingMethod);
+			}
+		}
+		if (HasListDestroy(type)) {
+			Write("g_array_set_clear_func(");
+			WriteArrayElement(def, nesting);
+			Write(", ");
+			switch (type.AsClassType().GetElementType()) {
+			case FuStringStorageType _:
+				this.ListFrees["String"] = "free(*(void **) ptr)";
+				Write("FuList_FreeString");
+				break;
+			case FuDynamicPtrType _:
+				this.SharedRelease = true;
+				this.ListFrees["Shared"] = "FuShared_Release(*(void **) ptr)";
+				Write("FuList_FreeShared");
+				break;
+			case FuStorageType storage:
+				switch (storage.Class.Id) {
+				case FuId.ListClass:
+				case FuId.StackClass:
+					this.ListFrees["List"] = "g_array_free(*(GArray **) ptr, TRUE)";
+					Write("FuList_FreeList");
+					break;
+				case FuId.HashSetClass:
+				case FuId.DictionaryClass:
+					this.ListFrees["HashTable"] = "g_hash_table_unref(*(GHashTable **) ptr)";
+					Write("FuList_FreeHashTable");
+					break;
+				case FuId.SortedSetClass:
+				case FuId.SortedDictionaryClass:
+					this.ListFrees["Tree"] = "g_tree_unref(*(GTree **) ptr)";
+					Write("FuList_FreeTree");
+					break;
+				default:
+					Write("(GDestroyNotify) ");
+					WriteName(storage.Class);
+					Write("_Destruct");
+					break;
+				}
+				break;
+			default:
+				assert false;
+			}
+			WriteLine(");");
+		}
+		while (--nesting >= 0)
+			CloseBlock();
+		base.WriteInitCode(def);
+	}
+
+	void WriteMemberAccess!(FuType leftType, FuSymbol /* FuClass */ symbolClass)
+	{
+		if (leftType is FuStorageType)
+			WriteChar('.');
+		else
+			Write("->");
+		for (FuSymbol klass = leftType.AsClassType().Class; klass != symbolClass; klass = klass.Parent)
+			Write("base.");
+	}
+
+	protected override void WriteMemberOp!(FuExpr left, FuSymbolReference? symbol)
+	{
+		WriteMemberAccess(left.Type, symbol.Symbol.Parent);
+	}
+
+	protected override void WriteArrayPtr!(FuExpr expr, FuPriority parent)
+	{
+		if (expr.Type is FuClassType list && list.Class.Id == FuId.ListClass) {
+			WriteChar('(');
+			WriteType(list.GetElementType(), false);
+			Write(" *) ");
+			WritePostfix(expr, "->data");
+		}
+		else
+			expr.Accept(this, parent);
+	}
+
+	protected override void WriteCoercedInternal!(FuType type, FuExpr expr, FuPriority parent)
+	{
+		switch (type) {
+		case FuDynamicPtrType dynamic when expr is FuSymbolReference && parent != FuPriority.Equality:
+			this.SharedAddRef = true;
+			if (dynamic.Class.Id == FuId.ArrayPtrClass)
+				WriteDynamicArrayCast(dynamic.GetElementType());
+			else {
+				WriteChar('(');
+				WriteName(dynamic.Class);
+				Write(" *) ");
+			}
+			WriteCall("FuShared_AddRef", expr);
+			break;
+		case FuClassType klass when klass.Class.Id != FuId.StringClass && klass.Class.Id != FuId.ArrayPtrClass && !(klass is FuStorageType):
+			if (klass.Class.Id == FuId.QueueClass && expr.Type is FuStorageType) {
+				WriteChar('&');
+				expr.Accept(this, FuPriority.Primary);
+			}
+			else
+				WriteClassPtr(klass.Class, expr, parent);
+			break;
+		default:
+			if (type.Id == FuId.StringStorageType)
+				WriteStringStorageValue(expr);
+			else if (expr.Type.Id == FuId.StringStorageType)
+				WriteTemporaryOrExpr(expr, parent);
+			else
+				base.WriteCoercedInternal(type, expr, parent);
+			break;
+		}
+	}
+
+	protected virtual void WriteSubstringEqual!(FuCallExpr call, string literal, FuPriority parent, bool not)
+	{
+		if (parent > FuPriority.Equality)
+			WriteChar('(');
+		Include("string.h");
+		Write("memcmp(");
+		WriteStringPtrAdd(call);
+		Write(", ");
+		VisitLiteralString(literal);
+		Write(", ");
+		VisitLiteralLong(literal.Length);
+		WriteChar(')');
+		Write(GetEqOp(not));
+		WriteChar('0');
+		if (parent > FuPriority.Equality)
+			WriteChar(')');
+	}
+
+	protected virtual void WriteEqualStringInternal!(FuExpr left, FuExpr right, FuPriority parent, bool not)
+	{
+		if (parent > FuPriority.Equality)
+			WriteChar('(');
+		Include("string.h");
+		Write("strcmp("); // TODO: WriteCall("strcmp", left, right);
+		WriteTemporaryOrExpr(left, FuPriority.Argument);
+		Write(", ");
+		WriteTemporaryOrExpr(right, FuPriority.Argument);
+		WriteChar(')');
+		Write(GetEqOp(not));
+		WriteChar('0');
+		if (parent > FuPriority.Equality)
+			WriteChar(')');
+	}
+
+	protected override void WriteEqual!(FuExpr left, FuExpr right, FuPriority parent, bool not)
+	{
+		if (left.Type is FuStringType && right.Type is FuStringType) {
+			FuCallExpr? call = IsStringSubstring(left);
+			if (call != null && right is FuLiteralString literal) {
+				FuExpr lengthExpr = GetStringSubstringLength(call);
+				int rightLength = literal.GetAsciiLength();
+				if (rightLength >= 0) {
+					string rightValue = literal.Value;
+					if (lengthExpr is FuLiteralLong leftLength) {
+						if (leftLength.Value != rightLength)
+							NotYet(left, "String comparison with unmatched length"); // TODO: evaluate compile-time
+						WriteSubstringEqual(call, rightValue, parent, not);
+					}
+					else if (not) {
+						if (parent > FuPriority.CondOr)
+							WriteChar('(');
+						lengthExpr.Accept(this, FuPriority.Equality);
+						Write(" != ");
+						VisitLiteralLong(rightLength);
+						if (rightLength > 0) {
+							Write(" || ");
+							WriteSubstringEqual(call, rightValue, FuPriority.CondOr, true);
+						}
+						if (parent > FuPriority.CondOr)
+							WriteChar(')');
+					}
+					else {
+						if (parent > FuPriority.CondAnd || parent == FuPriority.CondOr)
+							WriteChar('(');
+						lengthExpr.Accept(this, FuPriority.Equality);
+						Write(" == ");
+						VisitLiteralLong(rightLength);
+						if (rightLength > 0) {
+							Write(" && ");
+							WriteSubstringEqual(call, rightValue, FuPriority.CondAnd, false);
+						}
+						if (parent > FuPriority.CondAnd || parent == FuPriority.CondOr)
+							WriteChar(')');
+					}
+					return;
+				}
+			}
+			WriteEqualStringInternal(left, right, parent, not);
+		}
+		else
+			base.WriteEqual(left, right, parent, not);
+	}
+
+	protected override void WriteStringLength!(FuExpr expr)
+	{
+		Include("string.h");
+		WriteCall("(int) strlen", expr);
+	}
+
+	void WriteStringMethod!(string name, FuExpr obj, List<FuExpr#> args)
+	{
+		Include("string.h");
+		Write("FuString_");
+		WriteCall(name, obj, args[0]);
+	}
+
+	void WriteSizeofCompare!(FuType elementType)
+	{
+		Write(", sizeof(");
+		FuId typeId = elementType.Id;
+		WriteNumericType(typeId);
+		Write("), FuCompare_");
+		WriteNumericType(typeId);
+		WriteChar(')');
+		this.Compares.Add(typeId);
+	}
+
+	protected void WriteArrayFill!(FuExpr obj, List<FuExpr#> args)
+	{
+		Write("for (int _i = 0; _i < ");
+		if (args.Count == 1)
+			WriteArrayStorageLength(obj);
+		else
+			args[2].Accept(this, FuPriority.Rel); // FIXME: side effect in every iteration
+		WriteLine("; _i++)");
+		WriteChar('\t');
+		obj.Accept(this, FuPriority.Primary); // FIXME: side effect in every iteration
+		WriteChar('[');
+		if (args.Count > 1)
+			StartAdd(args[1]); // FIXME: side effect in every iteration
+		Write("_i] = ");
+		args[0].Accept(this, FuPriority.Argument); // FIXME: side effect in every iteration
+	}
+
+	void WriteListAddInsert!(FuExpr obj, bool insert, string function, List<FuExpr#> args)
+	{
+		FuType elementType = obj.Type.AsClassType().GetElementType();
+		// TODO: don't emit temporary variable if already a var/field of matching type - beware of integer promotions!
+		int id = WriteCTemporary(elementType, elementType.IsFinal() ? null : args.Last());
+		if (elementType is FuStorageType storage && NeedsConstructor(storage.Class)) {
+			WriteName(storage.Class);
+			Write("_Construct(&futemp");
+			VisitLiteralLong(id);
+			WriteLine(");");
+		}
+		Write(function);
+		WriteChar('(');
+		obj.Accept(this, FuPriority.Argument);
+		if (insert) {
+			Write(", ");
+			args[0].Accept(this, FuPriority.Argument);
+		}
+		Write(", futemp");
+		VisitLiteralLong(id);
+		WriteChar(')');
+		this.CurrentTemporaries[id] = elementType;
+	}
+
+	void WriteDictionaryLookup!(FuExpr obj, string function, FuExpr key)
+	{
+		Write(function);
+		WriteChar('(');
+		obj.Accept(this, FuPriority.Argument);
+		Write(", ");
+		WriteGConstPointerCast(key);
+		WriteChar(')');
+	}
+
+	void WriteArgsAndRightParenthesis!(FuMethod method, List<FuExpr#> args)
+	{
+		int i = 0;
+		for (FuVar? param = method.Parameters.FirstParameter(); param != null; param = param.NextParameter()) {
+			if (i > 0 || method.CallType != FuCallType.Static)
+				Write(", ");
+			if (i >= args.Count)
+				param.Value.Accept(this, FuPriority.Argument);
+			else
+				WriteCoerced(param.Type, args[i], FuPriority.Argument);
+			i++;
+		}
+		WriteChar(')');
+	}
+
+	void WriteCRegexOptions!(List<FuExpr#> args)
+	{
+		if (!WriteRegexOptions(args, "", " | ", "", "G_REGEX_CASELESS", "G_REGEX_MULTILINE", "G_REGEX_DOTALL"))
+			WriteChar('0');
+	}
+
+	protected void WritePrintfNotInterpolated!(List<FuExpr#> args, bool newLine)
+	{
+		Write("\"%");
+		switch (args[0].Type) {
+		case FuIntegerType intType:
+			if (intType.Id == FuId.LongType)
+				WritePrintfLongPrefix();
+			WriteChar('d');
+			break;
+		case FuFloatingType _:
+			WriteChar('g');
+			break;
+		default:
+			WriteChar('s');
+			break;
+		}
+		if (newLine)
+			Write("\\n");
+		Write("\", ");
+		WriteInterpolatedStringArgBase(args[0]);
+		WriteChar(')');
+	}
+
+	void WriteTextWriterWrite!(FuExpr obj, List<FuExpr#> args, bool newLine)
+	{
+		if (args.Count == 0) {
+			Write("putc('\\n', ");
+			obj.Accept(this, FuPriority.Argument);
+			WriteChar(')');
+		}
+		else if (args[0] is FuInterpolatedString interpolated) {
+			Write("fprintf(");
+			obj.Accept(this, FuPriority.Argument);
+			Write(", ");
+			WritePrintf(interpolated, newLine);
+		}
+		else if (args[0].Type is FuNumericType) {
+			Write("fprintf(");
+			obj.Accept(this, FuPriority.Argument);
+			Write(", ");
+			WritePrintfNotInterpolated(args, newLine);
+		}
+		else if (!newLine) {
+			Write("fputs(");
+			args[0].Accept(this, FuPriority.Argument);
+			Write(", ");
+			obj.Accept(this, FuPriority.Argument);
+			WriteChar(')');
+		}
+		else if (args[0] is FuLiteralString literal) {
+			Write("fputs(");
+			WriteStringLiteralWithNewLine(literal.Value);
+			Write(", ");
+			obj.Accept(this, FuPriority.Argument);
+			WriteChar(')');
+		}
+		else {
+			Write("fprintf(");
+			obj.Accept(this, FuPriority.Argument);
+			Write(", \"%s\\n\", ");
+			args[0].Accept(this, FuPriority.Argument);
+			WriteChar(')');
+		}
+	}
+
+	void WriteConsoleWrite!(List<FuExpr#> args, bool newLine)
+	{
+		Include("stdio.h");
+		if (args.Count == 0)
+			Write("putchar('\\n')");
+		else if (args[0] is FuInterpolatedString interpolated) {
+			Write("printf(");
+			WritePrintf(interpolated, newLine);
+		}
+		else if (args[0].Type is FuNumericType) {
+			Write("printf(");
+			WritePrintfNotInterpolated(args, newLine);
+		}
+		else if (!newLine) {
+			Write("fputs(");
+			args[0].Accept(this, FuPriority.Argument);
+			Write(", stdout)");
+		}
+		else
+			WriteCall("puts", args[0]);
+	}
+
+	static FuClass GetVtblStructClass(FuClass klass)
+	{
+		while (!klass.AddsVirtualMethods()) {
+			assert klass.Parent is FuClass baseClass;
+			klass = baseClass;
+		}
+		return klass;
+	}
+
+	static FuClass GetVtblPtrClass(FuClass klass)
+	{
+		for (FuClass? result = null;;) {
+			if (klass.AddsVirtualMethods())
+				result = klass;
+			if (!(klass.Parent is FuClass baseClass))
+				return result;
+			klass = baseClass;
+		}
+	}
+
+	protected void WriteCCall!(FuExpr? obj, FuMethod method, List<FuExpr#> args)
+	{
+		FuClass klass = this.CurrentClass;
+		assert method.Parent is FuClass declaringClass;
+		if (IsReferenceTo(obj, FuId.BasePtr)) {
+			WriteName(method);
+			Write("(&self->base");
+			WriteUpcast(declaringClass, klass.Parent);
+		}
+		else {
+			FuClass definingClass = declaringClass;
+			switch (method.CallType) {
+			case FuCallType.Abstract:
+			case FuCallType.Virtual:
+			case FuCallType.Override:
+				if (method.CallType == FuCallType.Override) {
+					assert method.GetDeclaringMethod().Parent is FuClass declaringClass1;
+					declaringClass = declaringClass1;
+				}
+				if (obj != null)
+					klass = obj.Type.AsClassType().Class;
+				FuClass ptrClass = GetVtblPtrClass(klass);
+				FuClass structClass = GetVtblStructClass(definingClass);
+				if (structClass != ptrClass) {
+					Write("((const ");
+					WriteName(structClass);
+					Write("Vtbl *) ");
+				}
+				if (obj != null) {
+					obj.Accept(this, FuPriority.Primary);
+					WriteMemberAccess(obj.Type, ptrClass);
+				}
+				else
+					WriteSelfForField(ptrClass);
+				Write("vtbl");
+				if (structClass != ptrClass)
+					WriteChar(')');
+				Write("->");
+				WriteCamelCase(method.Name);
+				break;
+			default:
+				WriteName(method);
+				break;
+			}
+			WriteChar('(');
+			if (method.CallType != FuCallType.Static) {
+				if (obj != null)
+					WriteClassPtr(declaringClass, obj, FuPriority.Argument);
+				else if (klass == declaringClass)
+					Write("self");
+				else {
+					Write("&self->base");
+					WriteUpcast(declaringClass, klass.Parent);
+				}
+			}
+		}
+		WriteArgsAndRightParenthesis(method, args);
+	}
+
+	void WriteTryParse!(FuExpr obj, List<FuExpr#> args)
+	{
+		IncludeStdBool();
+		Write("_TryParse(&");
+		obj.Accept(this, FuPriority.Primary);
+		Write(", ");
+		args[0].Accept(this, FuPriority.Argument);
+		if (obj.Type is FuIntegerType)
+			WriteTryParseRadix(args);
+		WriteChar(')');
+	}
+
+	protected void WriteStringSubstring!(FuExpr obj, List<FuExpr#> args, FuPriority parent)
+	{
+		if (args.Count == 1) {
+			if (parent > FuPriority.Add)
+				WriteChar('(');
+			WriteAdd(obj, args[0]);
+			if (parent > FuPriority.Add)
+				WriteChar(')');
+		}
+		else
+			NotSupported(obj, "Substring");
+	}
+
+	void StartArrayContains!(FuExpr obj)
+	{
+		Write("FuArray_Contains_");
+		FuId typeId = obj.Type.AsClassType().GetElementType().Id;
+		switch (typeId) {
+		case FuId.None:
+			Write("object(");
+			break;
+		case FuId.StringStorageType:
+		case FuId.StringPtrType:
+			typeId = FuId.StringPtrType;
+			Include("string.h");
+			Write("string((const char * const *) ");
+			break;
+		default:
+			WriteNumericType(typeId);
+			Write("((const ");
+			WriteNumericType(typeId);
+			Write(" *) ");
+			break;
+		}
+		this.Contains.Add(typeId);
+	}
+
+	void StartArrayIndexing!(FuExpr obj, FuType elementType)
+	{
+		Write("g_array_index(");
+		obj.Accept(this, FuPriority.Argument);
+		Write(", ");
+		WriteType(elementType, false);
+		Write(", ");
+	}
+
+	protected override void WriteCallExpr!(FuExpr? obj, FuMethod method, List<FuExpr#> args, FuPriority parent)
+	{
+		switch (method.Id) {
+		case FuId.None:
+		case FuId.ClassToString:
+			WriteCCall(obj, method, args);
+			break;
+		case FuId.EnumFromInt:
+			WriteStaticCast(method.Type, args[0]);
+			break;
+		case FuId.EnumHasFlag:
+			WriteEnumHasFlag(obj, args, parent);
+			break;
+		case FuId.IntTryParse:
+			this.IntTryParse = true;
+			Write("FuInt");
+			WriteTryParse(obj, args);
+			break;
+		case FuId.LongTryParse:
+			this.LongTryParse = true;
+			Write("FuLong");
+			WriteTryParse(obj, args);
+			break;
+		case FuId.DoubleTryParse:
+			this.DoubleTryParse = true;
+			Write("FuDouble");
+			WriteTryParse(obj, args);
+			break;
+		case FuId.StringContains:
+			Include("string.h");
+			if (parent > FuPriority.Equality)
+				WriteChar('(');
+			int c = GetOneAscii(args[0]);
+			if (c >= 0) {
+				Write("strchr(");
+				obj.Accept(this, FuPriority.Argument);
+				Write(", ");
+				VisitLiteralChar(c);
+				WriteChar(')');
+			}
+			else
+				WriteCall("strstr", obj, args[0]);
+			Write(" != NULL");
+			if (parent > FuPriority.Equality)
+				WriteChar(')');
+			break;
+		case FuId.StringEndsWith:
+			this.StringEndsWith = true;
+			WriteStringMethod("EndsWith", obj, args);
+			break;
+		case FuId.StringIndexOf:
+			this.StringIndexOf = true;
+			WriteStringMethod("IndexOf", obj, args);
+			break;
+		case FuId.StringLastIndexOf:
+			this.StringLastIndexOf = true;
+			WriteStringMethod("LastIndexOf", obj, args);
+			break;
+		case FuId.StringReplace:
+			Include("string.h");
+			this.StringAppend = true;
+			this.StringReplace = true;
+			WriteCall("FuString_Replace", obj, args[0], args[1]);
+			break;
+		case FuId.StringStartsWith:
+			if (parent > FuPriority.Equality)
+				WriteChar('(');
+			int c2 = GetOneAscii(args[0]);
+			if (c2 >= 0) {
+				WritePostfix(obj, "[0] == ");
+				VisitLiteralChar(c2);
+			}
+			else {
+				Include("string.h");
+				Write("strncmp(");
+				obj.Accept(this, FuPriority.Argument);
+				Write(", ");
+				args[0].Accept(this, FuPriority.Argument);
+				Write(", strlen(");
+				args[0].Accept(this, FuPriority.Argument); // FIXME: side effect
+				Write(")) == 0");
+			}
+			if (parent > FuPriority.Equality)
+				WriteChar(')');
+			break;
+		case FuId.StringSubstring:
+			WriteStringSubstring(obj, args, parent);
+			break;
+		case FuId.ArrayBinarySearchAll:
+		case FuId.ArrayBinarySearchPart:
+			if (parent > FuPriority.Add)
+				WriteChar('(');
+			Write("(const ");
+			FuType elementType2 = obj.Type.AsClassType().GetElementType();
+			WriteType(elementType2, false);
+			Write(" *) bsearch(&");
+			args[0].Accept(this, FuPriority.Primary); // TODO: not lvalue, promoted
+			Write(", ");
+			if (args.Count == 1)
+				WriteArrayPtr(obj, FuPriority.Argument);
+			else
+				WriteArrayPtrAdd(obj, args[1]);
+			Write(", ");
+			if (args.Count == 1)
+				WriteArrayStorageLength(obj);
+			else
+				args[2].Accept(this, FuPriority.Argument);
+			WriteSizeofCompare(elementType2);
+			Write(" - ");
+			WriteArrayPtr(obj, FuPriority.Mul);
+			if (parent > FuPriority.Add)
+				WriteChar(')');
+			break;
+		case FuId.ArrayContains:
+			StartArrayContains(obj);
+			obj.Accept(this, FuPriority.Argument);
+			Write(", ");
+			WriteArrayStorageLength(obj);
+			Write(", ");
+			args[0].Accept(this, FuPriority.Argument);
+			WriteChar(')');
+			break;
+		case FuId.ArrayCopyTo:
+		case FuId.ListCopyTo:
+			Include("string.h");
+			FuType elementType = obj.Type.AsClassType().GetElementType();
+			if (IsHeapAllocated(elementType))
+				NotYet(obj, "CopyTo for this type"); // TODO
+			Write("memcpy(");
+			WriteArrayPtrAdd(args[1], args[2]);
+			Write(", ");
+			WriteArrayPtrAdd(obj, args[0]);
+			Write(", ");
+			if (elementType.Id == FuId.SByteRange || elementType.Id == FuId.ByteRange)
+				args[3].Accept(this, FuPriority.Argument);
+			else {
+				args[3].Accept(this, FuPriority.Mul);
+				Write(" * sizeof(");
+				WriteType(elementType, false);
+				WriteChar(')');
+			}
+			WriteChar(')');
+			break;
+		case FuId.ArrayFillAll:
+		case FuId.ArrayFillPart:
+			// TODO: IsHeapAllocated
+			if (args[0] is FuLiteral literal && literal.IsDefaultValue()) {
+				Include("string.h");
+				Write("memset(");
+				if (args.Count == 1) {
+					obj.Accept(this, FuPriority.Argument);
+					Write(", 0, sizeof(");
+					obj.Accept(this, FuPriority.Argument);
+					WriteChar(')');
+				}
+				else {
+					WriteArrayPtrAdd(obj, args[1]);
+					Write(", 0, ");
+					args[2].Accept(this, FuPriority.Mul);
+					Write(" * sizeof(");
+					WriteType(obj.Type.AsClassType().GetElementType(), false);
+					WriteChar(')');
+				}
+				WriteChar(')');
+			}
+			else
+				WriteArrayFill(obj, args);
+			break;
+		case FuId.ArraySortAll:
+			Write("qsort(");
+			WriteArrayPtr(obj, FuPriority.Argument);
+			Write(", ");
+			WriteArrayStorageLength(obj);
+			WriteSizeofCompare(obj.Type.AsClassType().GetElementType());
+			break;
+		case FuId.ArraySortPart:
+		case FuId.ListSortPart:
+			Write("qsort(");
+			WriteArrayPtrAdd(obj, args[0]);
+			Write(", ");
+			args[1].Accept(this, FuPriority.Argument);
+			WriteSizeofCompare(obj.Type.AsClassType().GetElementType());
+			break;
+		case FuId.ListAdd:
+		case FuId.StackPush:
+			switch (obj.Type.AsClassType().GetElementType()) {
+			case FuArrayStorageType _:
+			case FuStorageType storage when storage.Class.Id == FuId.None && !NeedsConstructor(storage.Class):
+				Write("g_array_set_size(");
+				obj.Accept(this, FuPriority.Argument);
+				Write(", ");
+				WritePostfix(obj, "->len + 1)"); // FIXME: side effect
+				break;
+			default:
+				WriteListAddInsert(obj, false, "g_array_append_val", args);
+				break;
+			}
+			break;
+		case FuId.ListClear:
+		case FuId.StackClear:
+			Write("g_array_set_size(");
+			obj.Accept(this, FuPriority.Argument);
+			Write(", 0)");
+			break;
+		case FuId.ListContains:
+			StartArrayContains(obj);
+			WritePostfix(obj, "->data, ");
+			WritePostfix(obj, "->len, "); // FIXME: side effect
+			args[0].Accept(this, FuPriority.Argument);
+			WriteChar(')');
+			break;
+		case FuId.ListInsert:
+			WriteListAddInsert(obj, true, "g_array_insert_val", args);
+			break;
+		case FuId.ListLast:
+		case FuId.StackPeek:
+			StartArrayIndexing(obj, obj.Type.AsClassType().GetElementType());
+			WritePostfix(obj, "->len - 1)"); // FIXME: side effect
+			break;
+		case FuId.ListRemoveAt:
+			WriteCall("g_array_remove_index", obj, args[0]);
+			break;
+		case FuId.ListRemoveRange:
+			WriteCall("g_array_remove_range", obj, args[0], args[1]);
+			break;
+		case FuId.ListSortAll:
+			Write("g_array_sort(");
+			obj.Accept(this, FuPriority.Argument);
+			FuId typeId2 = obj.Type.AsClassType().GetElementType().Id;
+			Write(", FuCompare_");
+			WriteNumericType(typeId2);
+			WriteChar(')');
+			this.Compares.Add(typeId2);
+			break;
+		case FuId.QueueClear:
+			Write("g_queue_clear("); // TODO: g_queue_clear_full
+			WriteQueueObject(obj);
+			WriteChar(')');
+			break;
+		case FuId.QueueDequeue:
+			WriteQueueGet("g_queue_pop_head", obj, parent);
+			break;
+		case FuId.QueueEnqueue:
+			Write("g_queue_push_tail(");
+			WriteQueueObject(obj);
+			Write(", ");
+			WriteGPointerCast(obj.Type.AsClassType().GetElementType(), args[0]);
+			WriteChar(')');
+			break;
+		case FuId.QueuePeek:
+			WriteQueueGet("g_queue_peek_head", obj, parent);
+			break;
+		case FuId.StackPop:
+			// FIXME: destroy
+			if (parent == FuPriority.Statement)
+				WritePostfix(obj, "->len--");
+			else {
+				StartArrayIndexing(obj, obj.Type.AsClassType().GetElementType());
+				Write("--");
+				WritePostfix(obj, "->len)"); // FIXME: side effect
+			}
+			break;
+		case FuId.HashSetAdd:
+			Write("g_hash_table_add(");
+			obj.Accept(this, FuPriority.Argument);
+			Write(", ");
+			WriteGPointerCast(obj.Type.AsClassType().GetElementType(), args[0]);
+			WriteChar(')');
+			break;
+		case FuId.HashSetClear:
+		case FuId.DictionaryClear:
+			WriteCall("g_hash_table_remove_all", obj);
+			break;
+		case FuId.HashSetContains:
+		case FuId.DictionaryContainsKey:
+			WriteDictionaryLookup(obj, "g_hash_table_contains", args[0]);
+			break;
+		case FuId.HashSetRemove:
+		case FuId.DictionaryRemove:
+			WriteDictionaryLookup(obj, "g_hash_table_remove", args[0]);
+			break;
+		case FuId.SortedSetAdd:
+			Write("g_tree_insert(");
+			obj.Accept(this, FuPriority.Argument);
+			Write(", ");
+			WriteGPointerCast(obj.Type.AsClassType().GetKeyType(), args[0]);
+			Write(", NULL)");
+			break;
+		case FuId.DictionaryAdd:
+			StartDictionaryInsert(obj, args[0]);
+			FuClassType valueType = obj.Type.AsClassType().GetValueType().AsClassType(); // FuStorageType
+			switch (valueType.Class.Id) {
+			case FuId.ListClass:
+			case FuId.StackClass:
+			case FuId.DictionaryClass:
+			case FuId.SortedDictionaryClass:
+				WriteNewStorage(valueType);
+				break;
+			default:
+				if (valueType.Class.IsPublic && valueType.Class.Constructor != null && valueType.Class.Constructor.Visibility == FuVisibility.Public) { // FIXME: construct fields if no public constructor
+					WriteName(valueType.Class);
+					Write("_New()");
+				}
+				else {
+					Write("malloc(sizeof(");
+					WriteType(valueType, false);
+					Write("))");
+				}
+				break;
+			}
+			WriteChar(')');
+			break;
+		case FuId.SortedSetClear:
+		case FuId.SortedDictionaryClear:
+			// TODO: since glib-2.70: WriteCall("g_tree_remove_all", obj);
+			Write("g_tree_destroy(g_tree_ref(");
+			obj.Accept(this, FuPriority.Argument);
+			Write("))");
+			break;
+		case FuId.SortedSetContains:
+		case FuId.SortedDictionaryContainsKey:
+			Write("g_tree_lookup_extended(");
+			obj.Accept(this, FuPriority.Argument);
+			Write(", ");
+			WriteGConstPointerCast(args[0]);
+			Write(", NULL, NULL)");
+			break;
+		case FuId.SortedSetRemove:
+		case FuId.SortedDictionaryRemove:
+			WriteDictionaryLookup(obj, "g_tree_remove", args[0]);
+			break;
+		case FuId.TextWriterWrite:
+			WriteTextWriterWrite(obj, args, false);
+			break;
+		case FuId.TextWriterWriteChar:
+			WriteCall("putc", args[0], obj);
+			break;
+		case FuId.TextWriterWriteLine:
+			WriteTextWriterWrite(obj, args, true);
+			break;
+		case FuId.ConsoleWrite:
+			WriteConsoleWrite(args, false);
+			break;
+		case FuId.ConsoleWriteLine:
+			WriteConsoleWrite(args, true);
+			break;
+		case FuId.UTF8GetByteCount:
+			WriteStringLength(args[0]);
+			break;
+		case FuId.UTF8GetBytes:
+			Include("string.h");
+			Write("memcpy("); // NOT strcpy because without the NUL terminator
+			WriteArrayPtrAdd(args[1], args[2]);
+			Write(", ");
+			args[0].Accept(this, FuPriority.Argument);
+			Write(", strlen(");
+			args[0].Accept(this, FuPriority.Argument); // FIXME: side effect
+			Write("))");
+			break;
+		case FuId.EnvironmentGetEnvironmentVariable:
+			WriteCall("getenv", args[0]);
+			break;
+		case FuId.RegexCompile:
+			WriteGlib("g_regex_new(");
+			WriteTemporaryOrExpr(args[0], FuPriority.Argument);
+			Write(", ");
+			WriteCRegexOptions(args);
+			Write(", 0, NULL)");
+			break;
+		case FuId.RegexEscape:
+			WriteGlib("g_regex_escape_string(");
+			WriteTemporaryOrExpr(args[0], FuPriority.Argument);
+			Write(", -1)");
+			break;
+		case FuId.RegexIsMatchStr:
+			WriteGlib("g_regex_match_simple(");
+			WriteTemporaryOrExpr(args[1], FuPriority.Argument);
+			Write(", ");
+			WriteTemporaryOrExpr(args[0], FuPriority.Argument);
+			Write(", ");
+			WriteCRegexOptions(args);
+			Write(", 0)");
+			break;
+		case FuId.RegexIsMatchRegex:
+			Write("g_regex_match(");
+			obj.Accept(this, FuPriority.Argument);
+			Write(", ");
+			WriteTemporaryOrExpr(args[0], FuPriority.Argument);
+			Write(", 0, NULL)");
+			break;
+		case FuId.MatchFindStr:
+			this.MatchFind = true;
+			Write("FuMatch_Find(&");
+			obj.Accept(this, FuPriority.Primary);
+			Write(", ");
+			WriteTemporaryOrExpr(args[0], FuPriority.Argument);
+			Write(", ");
+			WriteTemporaryOrExpr(args[1], FuPriority.Argument);
+			Write(", ");
+			WriteCRegexOptions(args);
+			WriteChar(')');
+			break;
+		case FuId.MatchFindRegex:
+			Write("g_regex_match(");
+			args[1].Accept(this, FuPriority.Argument);
+			Write(", ");
+			WriteTemporaryOrExpr(args[0], FuPriority.Argument);
+			Write(", 0, &");
+			obj.Accept(this, FuPriority.Primary);
+			WriteChar(')');
+			break;
+		case FuId.MatchGetCapture:
+			WriteCall("g_match_info_fetch", obj, args[0]);
+			break;
+		case FuId.MathMethod:
+		case FuId.MathIsFinite:
+		case FuId.MathIsNaN:
+		case FuId.MathLog2:
+			IncludeMath();
+			WriteLowercase(method.Name);
+			WriteArgsInParentheses(method, args);
+			break;
+		case FuId.MathAbs:
+			switch (args[0].Type.Id) {
+			case FuId.LongType:
+				WriteCall("llabs", args[0]);
+				break;
+			case FuId.FloatType:
+				IncludeMath();
+				WriteCall("fabsf", args[0]);
+				break;
+			case FuId.FloatIntType:
+			case FuId.DoubleType:
+				IncludeMath();
+				WriteCall("fabs", args[0]);
+				break;
+			default:
+				WriteCall("abs", args[0]);
+				break;
+			}
+			break;
+		case FuId.MathCeiling:
+			IncludeMath();
+			WriteCall("ceil", args[0]);
+			break;
+		case FuId.MathFusedMultiplyAdd:
+			IncludeMath();
+			WriteCall("fma", args[0], args[1], args[2]);
+			break;
+		case FuId.MathIsInfinity:
+			IncludeMath();
+			WriteCall("isinf", args[0]);
+			break;
+		case FuId.MathMaxDouble:
+			IncludeMath();
+			WriteCall("fmax", args[0], args[1]);
+			break;
+		case FuId.MathMinDouble:
+			IncludeMath();
+			WriteCall("fmin", args[0], args[1]);
+			break;
+		case FuId.MathRound:
+			IncludeMath();
+			WriteCall("round", args[0]);
+			break;
+		case FuId.MathTruncate:
+			IncludeMath();
+			WriteCall("trunc", args[0]);
+			break;
+		default:
+			NotSupported(obj, method.Name);
+			break;
+		}
+	}
+
+	void WriteDictionaryIndexing!(string function, FuBinaryExpr expr, FuPriority parent)
+	{
+		FuType valueType = expr.Left.Type.AsClassType().GetValueType();
+		if (valueType is FuIntegerType && valueType.Id != FuId.LongType) {
+			Write("GPOINTER_TO_INT(");
+			WriteDictionaryLookup(expr.Left, function, expr.Right);
+			WriteChar(')');
+		}
+		else {
+			if (parent > FuPriority.Mul)
+				WriteChar('(');
+			if (valueType is FuStorageType storage && (storage.Class.Id == FuId.None || storage.Class.Id == FuId.ArrayStorageClass))
+				WriteDynamicArrayCast(valueType);
+			else {
+				WriteStaticCastType(valueType);
+				if (valueType is FuEnum) {
+					assert parent <= FuPriority.Mul, "Should close two parens";
+					Write("GPOINTER_TO_INT(");
+				}
+			}
+			WriteDictionaryLookup(expr.Left, function, expr.Right);
+			if (parent > FuPriority.Mul || valueType is FuEnum)
+				WriteChar(')');
+		}
+	}
+
+	protected override void WriteIndexingExpr!(FuBinaryExpr expr, FuPriority parent)
+	{
+		if (expr.Left.Type is FuClassType klass) {
+			switch (klass.Class.Id) {
+			case FuId.ListClass:
+				if (klass.GetElementType() is FuArrayStorageType) {
+					WriteChar('(');
+					WriteDynamicArrayCast(klass.GetElementType());
+					WritePostfix(expr.Left, "->data)[");
+					expr.Right.Accept(this, FuPriority.Argument);
+					WriteChar(']');
+				}
+				else {
+					StartArrayIndexing(expr.Left, klass.GetElementType());
+					expr.Right.Accept(this, FuPriority.Argument);
+					WriteChar(')');
+				}
+				return;
+			case FuId.DictionaryClass:
+				WriteDictionaryIndexing("g_hash_table_lookup", expr, parent);
+				return;
+			case FuId.SortedDictionaryClass:
+				WriteDictionaryIndexing("g_tree_lookup", expr, parent);
+				return;
+			default:
+				break;
+			}
+		}
+		base.WriteIndexingExpr(expr, parent);
+	}
+
+	internal override void VisitBinaryExpr!(FuBinaryExpr expr, FuPriority parent)
+	{
+		switch (expr.Op) {
+		case FuToken.Plus:
+			if (expr.Type.Id == FuId.StringStorageType) {
+				this.StringFormat = true;
+				Include("stdarg.h");
+				Include("stdio.h");
+				Write("FuString_Format(\"%s%s\", ");
+				expr.Left.Accept(this, FuPriority.Argument);
+				Write(", ");
+				expr.Right.Accept(this, FuPriority.Argument);
+				WriteChar(')');
+				return;
+			}
+			break;
+		case FuToken.Equal:
+		case FuToken.NotEqual:
+		case FuToken.Greater:
+			FuExpr? str = IsStringEmpty(expr);
+			if (str != null) {
+				WritePostfix(str, expr.Op == FuToken.Equal ? "[0] == '\\0'" : "[0] != '\\0'");
+				return;
+			}
+			break;
+		case FuToken.AddAssign:
+			if (expr.Left.Type.Id == FuId.StringStorageType) {
+				if (expr.Right is FuInterpolatedString rightInterpolated) {
+					this.StringAssign = true;
+					Write("FuString_Assign(&");
+					expr.Left.Accept(this, FuPriority.Primary);
+					this.StringFormat = true;
+					Include("stdarg.h");
+					Include("stdio.h");
+					Write(", FuString_Format(\"%s");
+					WritePrintfFormat(rightInterpolated);
+					Write("\", ");
+					expr.Left.Accept(this, FuPriority.Argument); // FIXME: side effect
+					WriteInterpolatedStringArgs(rightInterpolated);
+					WriteChar(')');
+				}
+				else {
+					Include("string.h");
+					this.StringAppend = true;
+					Write("FuString_Append(&");
+					expr.Left.Accept(this, FuPriority.Primary);
+					Write(", ");
+					expr.Right.Accept(this, FuPriority.Argument);
+				}
+				WriteChar(')');
+				return;
+			}
+			break;
+		case FuToken.Is:
+			NotSupported(expr, "'is' operator");
+			break;
+		default:
+			break;
+		}
+		base.VisitBinaryExpr(expr, parent);
+	}
+
+	protected override void WriteResource!(string name, int length)
+	{
+		Write("FuResource_");
+		WriteResourceName(name);
+	}
+
+	internal override void VisitLambdaExpr!(FuLambdaExpr expr)
+	{
+		NotSupported(expr, "Lambda expression");
+	}
+
+	void WriteDestructLoopOrSwitch!(FuCondCompletionStatement loopOrSwitch)
+	{
+		for (int i = this.VarsToDestruct.Count; --i >= 0; ) {
+			FuVar def = this.VarsToDestruct[i];
+			if (!loopOrSwitch.Encloses(def))
+				break;
+			WriteDestruct(def);
+		}
+	}
+
+	void TrimVarsToDestruct!(int i)
+	{
+		this.VarsToDestruct.RemoveRange(i, this.VarsToDestruct.Count - i);
+	}
+
+	protected override void CleanupBlock!(FuBlock statement)
+	{
+		int i = this.VarsToDestruct.Count;
+		for (; i > 0; i--) {
+			FuVar def = this.VarsToDestruct[i - 1];
+			if (def.Parent != statement) // destroy only the variables in this block
+				break;
+			if (statement.CompletesNormally())
+				WriteDestruct(def);
+		}
+		TrimVarsToDestruct(i);
+	}
+
+	internal override void VisitBreak!(FuBreak statement)
+	{
+		WriteDestructLoopOrSwitch(statement.LoopOrSwitch);
+		base.VisitBreak(statement);
+	}
+
+	internal override void VisitContinue!(FuContinue statement)
+	{
+		WriteDestructLoopOrSwitch(statement.Loop);
+		base.VisitContinue(statement);
+	}
+
+	internal override void VisitExpr!(FuExpr statement)
+	{
+		WriteCTemporaries(statement);
+		FuMethod? throwingMethod = GetThrowingMethod(statement);
+		if (throwingMethod != null) {
+			EnsureChildBlock();
+			statement.Accept(this, StartForwardThrow(throwingMethod));
+			EndForwardThrow(throwingMethod);
+			CleanupTemporaries();
+		}
+		else if (statement is FuCallExpr && statement.Type.Id == FuId.StringStorageType) {
+			Write("free(");
+			statement.Accept(this, FuPriority.Argument);
+			WriteLine(");");
+			CleanupTemporaries();
+		}
+		else if (statement is FuCallExpr && statement.Type is FuDynamicPtrType) {
+			this.SharedRelease = true;
+			Write("FuShared_Release(");
+			statement.Accept(this, FuPriority.Argument);
+			WriteLine(");");
+			CleanupTemporaries();
+		}
+		else
+			base.VisitExpr(statement);
+	}
+
+	void StartForeachHashTable!(FuForeach statement)
+	{
+		OpenBlock();
+		WriteLine("GHashTableIter fudictit;");
+		Write("g_hash_table_iter_init(&fudictit, ");
+		statement.Collection.Accept(this, FuPriority.Argument);
+		WriteLine(");");
+	}
+
+	void WriteDictIterVar!(FuNamedValue iter, string value)
+	{
+		WriteTypeAndName(iter);
+		Write(" = ");
+		if (iter.Type is FuIntegerType && iter.Type.Id != FuId.LongType) {
+			Write("GPOINTER_TO_INT(");
+			Write(value);
+			WriteChar(')');
+		}
+		else {
+			WriteStaticCastType(iter.Type);
+			Write(value);
+		}
+		WriteCharLine(';');
+	}
+
+	internal override void VisitForeach!(FuForeach statement)
+	{
+		string element = statement.GetVar().Name;
+		switch (statement.Collection.Type) {
+		case FuArrayStorageType array:
+			Write("for (int ");
+			WriteCamelCaseNotKeyword(element);
+			Write(" = 0; ");
+			WriteCamelCaseNotKeyword(element);
+			Write(" < ");
+			VisitLiteralLong(array.Length);
+			Write("; ");
+			WriteCamelCaseNotKeyword(element);
+			Write("++)");
+			WriteChild(statement.Body);
+			break;
+		case FuClassType klass:
+			switch (klass.Class.Id) {
+			case FuId.StringClass:
+				Write("for (");
+				WriteStringPtrType();
+				WriteCamelCaseNotKeyword(element);
+				Write(" = ");
+				statement.Collection.Accept(this, FuPriority.Argument);
+				Write("; *");
+				WriteCamelCaseNotKeyword(element);
+				Write(" != '\\0'; ");
+				WriteCamelCaseNotKeyword(element);
+				Write("++)");
+				WriteChild(statement.Body);
+				break;
+			case FuId.ListClass:
+				Write("for (");
+				FuType elementType = klass.GetElementType();
+				WriteType(elementType, false);
+				Write(" const *");
+				WriteCamelCaseNotKeyword(element);
+				Write(" = (");
+				WriteType(elementType, false);
+				Write(" const *) ");
+				WritePostfix(statement.Collection, "->data, ");
+				for (; elementType.IsArray(); elementType = elementType.AsClassType().GetElementType())
+					WriteChar('*');
+				if (elementType is FuClassType)
+					Write("* const ");
+				Write("*fuend = ");
+				WriteCamelCaseNotKeyword(element);
+				Write(" + ");
+				WritePostfix(statement.Collection, "->len; "); // FIXME: side effect
+				WriteCamelCaseNotKeyword(element);
+				Write(" < fuend; ");
+				WriteCamelCaseNotKeyword(element);
+				Write("++)");
+				WriteChild(statement.Body);
+				break;
+			case FuId.HashSetClass:
+				StartForeachHashTable(statement);
+				WriteLine("gpointer fukey;");
+				Write("while (g_hash_table_iter_next(&fudictit, &fukey, NULL)) ");
+				OpenBlock();
+				WriteDictIterVar(statement.GetVar(), "fukey");
+				FlattenBlock(statement.Body);
+				CloseBlock();
+				CloseBlock();
+				break;
+			case FuId.SortedSetClass:
+				Write("for (GTreeNode *fusetit = g_tree_node_first(");
+				statement.Collection.Accept(this, FuPriority.Argument);
+				Write("); fusetit != NULL; fusetit = g_tree_node_next(fusetit)) ");
+				OpenBlock();
+				WriteDictIterVar(statement.GetVar(), "g_tree_node_key(fusetit)");
+				FlattenBlock(statement.Body);
+				CloseBlock();
+				break;
+			case FuId.DictionaryClass:
+				StartForeachHashTable(statement);
+				WriteLine("gpointer fukey, fuvalue;");
+				Write("while (g_hash_table_iter_next(&fudictit, &fukey, &fuvalue)) ");
+				OpenBlock();
+				WriteDictIterVar(statement.GetVar(), "fukey");
+				WriteDictIterVar(statement.GetValueVar(), "fuvalue");
+				FlattenBlock(statement.Body);
+				CloseBlock();
+				CloseBlock();
+				break;
+			case FuId.SortedDictionaryClass:
+				Write("for (GTreeNode *fudictit = g_tree_node_first(");
+				statement.Collection.Accept(this, FuPriority.Argument);
+				Write("); fudictit != NULL; fudictit = g_tree_node_next(fudictit)) ");
+				OpenBlock();
+				WriteDictIterVar(statement.GetVar(), "g_tree_node_key(fudictit)");
+				WriteDictIterVar(statement.GetValueVar(), "g_tree_node_value(fudictit)");
+				FlattenBlock(statement.Body);
+				CloseBlock();
+				break;
+			default:
+				NotSupported(statement.Collection, klass.Class.Name);
+				break;
+			}
+			break;
+		default:
+			NotSupported(statement.Collection, statement.Collection.Type.ToString());
+			break;
+		}
+	}
+
+	internal override void VisitLock!(FuLock statement)
+	{
+		Write("mtx_lock(&");
+		statement.Lock.Accept(this, FuPriority.Primary);
+		WriteLine(");");
+		// TODO
+		statement.Body.AcceptStatement(this);
+		Write("mtx_unlock(&");
+		statement.Lock.Accept(this, FuPriority.Primary);
+		WriteLine(");");
+	}
+
+	internal override void VisitReturn!(FuReturn statement)
+	{
+		if (statement.Value == null) {
+			WriteDestructAll();
+			WriteLine(this.CurrentMethod.Throws ? "return true;" : "return;");
+		}
+		else if (statement.Value is FuLiteral || (this.VarsToDestruct.Count == 0 && !HasTemporariesToDestruct(statement.Value))) {
+			WriteDestructAll();
+			WriteCTemporaries(statement.Value);
+			base.VisitReturn(statement);
+		}
+		else {
+			if (statement.Value is FuSymbolReference symbol && symbol.Symbol is FuVar local) {
+				if (this.VarsToDestruct.Contains(local)) {
+					// Optimization: avoid copy
+					WriteDestructAll(local);
+					Write("return ");
+					if (this.CurrentMethod.Type is FuClassType resultPtr)
+						WriteClassPtr(resultPtr.Class, symbol, FuPriority.Argument); // upcast, but don't AddRef
+					else
+						symbol.Accept(this, FuPriority.Argument);
+					WriteCharLine(';');
+					return;
+				}
+				// Local variable value doesn't depend on destructed variables
+				WriteDestructAll();
+				base.VisitReturn(statement);
+				return;
+			}
+			WriteCTemporaries(statement.Value);
+			EnsureChildBlock();
+			StartDefinition(this.CurrentMethod.Type, true, true);
+			Write("returnValue = ");
+			WriteCoerced(this.CurrentMethod.Type, statement.Value, FuPriority.Argument);
+			WriteCharLine(';');
+			CleanupTemporaries();
+			WriteDestructAll();
+			WriteLine("return returnValue;");
+		}
+	}
+
+	protected override void WriteSwitchCaseBody!(List<FuStatement#> statements)
+	{
+		if (statements[0] is FuVar
+		 || (statements[0] is FuConst konst && konst.Type is FuArrayStorageType))
+			WriteCharLine(';');
+		int varsToDestructCount = this.VarsToDestruct.Count;
+		WriteStatements(statements);
+		TrimVarsToDestruct(varsToDestructCount);
+	}
+
+	internal override void VisitSwitch!(FuSwitch statement)
+	{
+		if (statement.IsTypeMatching())
+			NotSupported(statement, "Type-matching 'switch'");
+		else
+			base.VisitSwitch(statement);
+	}
+
+	internal override void VisitThrow!(FuThrow statement)
+	{
+		WriteThrow();
+	}
+
+	bool TryWriteCallAndReturn!(List<FuStatement#> statements, int lastCallIndex, FuExpr? returnValue)
+	{
+		if (this.VarsToDestruct.Count > 0)
+			return false;
+		for (int i = 0; i < lastCallIndex; i++) {
+			if (statements[i] is FuVar def && NeedToDestruct(def))
+				return false;
+		}
+		if (!(statements[lastCallIndex] is FuExpr call))
+			return false;
+		FuMethod? throwingMethod = GetThrowingMethod(call);
+		if (throwingMethod == null)
+			return false;
+
+		WriteFirstStatements(statements, lastCallIndex);
+		Write("return ");
+		if (throwingMethod.Type is FuNumericType) {
+			if (throwingMethod.Type is FuIntegerType) {
+				call.Accept(this, FuPriority.Equality);
+				Write(" != -1");
+			}
+			else {
+				IncludeMath();
+				Write("!isnan(");
+				call.Accept(this, FuPriority.Argument);
+				WriteChar(')');
+			}
+		}
+		else if (throwingMethod.Type.Id == FuId.VoidType)
+			call.Accept(this, FuPriority.Select);
+		else {
+			call.Accept(this, FuPriority.Equality);
+			Write(" != NULL");
+		}
+		if (returnValue != null) {
+			Write(" ? ");
+			returnValue.Accept(this, FuPriority.Select);
+			Write(" : ");
+			WriteThrowReturnValue();
+		}
+		WriteCharLine(';');
+		return true;
+	}
+
+	protected override void WriteStatements!(List<FuStatement#> statements)
+	{
+		int i = statements.Count - 2;
+		if (i >= 0 && statements[i + 1] is FuReturn ret && TryWriteCallAndReturn(statements, i, ret.Value))
+			return;
+		base.WriteStatements(statements);
+	}
+
+	protected override void WriteEnum!(FuEnum enu)
+	{
+		WriteNewLine();
+		WriteDoc(enu.Documentation);
+		Write("typedef enum ");
+		OpenBlock();
+		enu.AcceptValues(this);
+		WriteNewLine();
+		this.Indent--;
+		Write("} ");
+		WriteName(enu);
+		WriteCharLine(';');
+	}
+
+	void WriteTypedef!(FuClass klass)
+	{
+		if (klass.CallType == FuCallType.Static)
+			return;
+		Write("typedef struct ");
+		WriteName(klass);
+		WriteChar(' ');
+		WriteName(klass);
+		WriteCharLine(';');
+	}
+
+	protected void WriteTypedefs!(FuProgram program, bool pub)
+	{
+		for (FuSymbol? type = program.First; type != null; type = type.Next) {
+			switch (type) {
+			case FuClass klass:
+				if (klass.IsPublic == pub)
+					WriteTypedef(klass);
+				break;
+			case FuEnum enu:
+				if (enu.IsPublic == pub)
+					WriteEnum(enu);
+				break;
+			default:
+				assert false;
+			}
+		}
+	}
+
+	void WriteInstanceParameters!(FuMethod method)
+	{
+		WriteChar('(');
+		if (!method.IsMutator)
+			Write("const ");
+		WriteName(method.Parent);
+		Write(" *self");
+		WriteRemainingParameters(method, false, false);
+	}
+
+	void WriteSignature!(FuMethod method)
+	{
+		assert method.Parent is FuClass klass;
+		if (!klass.IsPublic || method.Visibility != FuVisibility.Public)
+			Write("static ");
+		WriteReturnType(method);
+		WriteName(klass);
+		WriteChar('_');
+		Write(method.Name);
+		if (method.CallType != FuCallType.Static)
+			WriteInstanceParameters(method);
+		else if (method.Parameters.Count() == 0)
+			Write("(void)");
+		else
+			WriteParameters(method, false);
+	}
+
+	void WriteVtblFields!(FuClass klass)
+	{
+		if (klass.Parent is FuClass baseClass)
+			WriteVtblFields(baseClass);
+		for (FuSymbol? symbol = klass.First; symbol != null; symbol = symbol.Next) {
+			if (symbol is FuMethod method && method.IsAbstractOrVirtual()) {
+				WriteReturnType(method);
+				Write("(*");
+				WriteCamelCase(method.Name);
+				WriteChar(')');
+				WriteInstanceParameters(method);
+				WriteCharLine(';');
+			}
+		}
+	}
+
+	void WriteVtblStruct!(FuClass klass)
+	{
+		Write("typedef struct ");
+		OpenBlock();
+		WriteVtblFields(klass);
+		this.Indent--;
+		Write("} ");
+		WriteName(klass);
+		WriteLine("Vtbl;");
+	}
+
+	protected virtual string GetConst(FuArrayStorageType array) => "const ";
+
+	protected override void WriteConst!(FuConst konst)
+	{
+		if (konst.Type is FuArrayStorageType array) {
+			Write("static ");
+			// FIXME: array of strings
+			Write(GetConst(array));
+			WriteTypeAndName(konst);
+			Write(" = ");
+			konst.Value.Accept(this, FuPriority.Argument);
+			WriteCharLine(';');
+		}
+		else if (konst.Visibility == FuVisibility.Public) {
+			Write("#define ");
+			WriteName(konst);
+			WriteChar(' ');
+			konst.Value.Accept(this, FuPriority.Argument);
+			WriteNewLine();
+		}
+	}
+
+	protected override void WriteField!(FuField field)
+	{
+		assert false;
+	}
+
+	static bool HasVtblValue(FuClass klass)
+	{
+		if (klass.CallType == FuCallType.Static || klass.CallType == FuCallType.Abstract)
+			return false;
+		for (FuSymbol? symbol = klass.First; symbol != null; symbol = symbol.Next) {
+			if (symbol is FuMethod method) {
+				switch (method.CallType) {
+				case FuCallType.Virtual:
+				case FuCallType.Override:
+				case FuCallType.Sealed:
+					return true;
+				default:
+					break;
+				}
+			}
+		}
+		return false;
+	}
+
+	protected override bool NeedsConstructor(FuClass klass)
+	{
+		if (klass.Id == FuId.MatchClass)
+			return false;
+		return base.NeedsConstructor(klass)
+			|| HasVtblValue(klass)
+			|| (klass.Parent is FuClass baseClass && NeedsConstructor(baseClass));
+	}
+
+	void WriteXstructorSignature!(string name, FuClass klass)
+	{
+		Write("static void ");
+		WriteName(klass);
+		WriteChar('_');
+		Write(name);
+		WriteChar('(');
+		WriteName(klass);
+		Write(" *self)");
+	}
+
+	protected void WriteSignatures!(FuClass klass, bool pub)
+	{
+		for (FuSymbol? symbol = klass.First; symbol != null; symbol = symbol.Next) {
+			switch (symbol) {
+			case FuConst konst when (konst.Visibility == FuVisibility.Public) == pub:
+				if (pub) {
+					WriteNewLine();
+					WriteDoc(konst.Documentation);
+				}
+				WriteConst(konst);
+				break;
+			case FuMethod method when method.IsLive && (method.Visibility == FuVisibility.Public) == pub && method.CallType != FuCallType.Abstract:
+				WriteNewLine();
+				WriteMethodDoc(method);
+				WriteSignature(method);
+				WriteCharLine(';');
+				break;
+			default:
+				break;
+			}
+		}
+	}
+
+	protected override void WriteClassInternal!(FuClass klass)
+	{
+		this.CurrentClass = klass;
+		if (klass.CallType != FuCallType.Static) {
+			WriteNewLine();
+			if (klass.AddsVirtualMethods())
+				WriteVtblStruct(klass);
+			WriteDoc(klass.Documentation);
+			Write("struct ");
+			WriteName(klass);
+			WriteChar(' ');
+			OpenBlock();
+			if (GetVtblPtrClass(klass) == klass) {
+				Write("const ");
+				WriteName(klass);
+				WriteLine("Vtbl *vtbl;");
+			}
+			if (klass.Parent is FuClass) {
+				WriteName(klass.Parent);
+				WriteLine(" base;");
+			}
+			for (FuSymbol? symbol = klass.First; symbol != null; symbol = symbol.Next) {
+				if (symbol is FuField field) {
+					WriteDoc(field.Documentation);
+					WriteTypeAndName(field);
+					WriteCharLine(';');
+				}
+			}
+			this.Indent--;
+			WriteLine("};");
+			if (NeedsConstructor(klass)) {
+				WriteXstructorSignature("Construct", klass);
+				WriteCharLine(';');
+			}
+			if (NeedsDestructor(klass)) {
+				WriteXstructorSignature("Destruct", klass);
+				WriteCharLine(';');
+			}
+		}
+		WriteSignatures(klass, false);
+	}
+
+	void WriteVtbl!(FuClass definingClass, FuClass declaringClass)
+	{
+		if (declaringClass.Parent is FuClass baseClass)
+			WriteVtbl(definingClass, baseClass);
+		for (FuSymbol? symbol = declaringClass.First; symbol != null; symbol = symbol.Next) {
+			if (symbol is FuMethod declaredMethod && declaredMethod.IsAbstractOrVirtual()) {
+				FuSymbol definedMethod = definingClass.TryLookup(declaredMethod.Name, false);
+				if (declaredMethod != definedMethod) {
+					WriteChar('(');
+					WriteReturnType(declaredMethod);
+					Write("(*)");
+					WriteInstanceParameters(declaredMethod);
+					Write(") ");
+				}
+				WriteName(definedMethod);
+				WriteCharLine(',');
+			}
+		}
+	}
+
+	protected void WriteConstructor!(FuClass klass)
+	{
+		if (!NeedsConstructor(klass))
+			return;
+		this.SwitchesWithGoto.Clear();
+		WriteNewLine();
+		WriteXstructorSignature("Construct", klass);
+		WriteNewLine();
+		OpenBlock();
+		if (klass.Parent is FuClass baseClass && NeedsConstructor(baseClass)) {
+			WriteName(baseClass);
+			WriteLine("_Construct(&self->base);");
+		}
+		if (HasVtblValue(klass)) {
+			FuClass structClass = GetVtblStructClass(klass);
+			Write("static const ");
+			WriteName(structClass);
+			Write("Vtbl vtbl = ");
+			OpenBlock();
+			WriteVtbl(klass, structClass);
+			this.Indent--;
+			WriteLine("};");
+			FuClass ptrClass = GetVtblPtrClass(klass);
+			WriteSelfForField(ptrClass);
+			Write("vtbl = ");
+			if (ptrClass != structClass) {
+				Write("(const ");
+				WriteName(ptrClass);
+				Write("Vtbl *) ");
+			}
+			WriteLine("&vtbl;");
+		}
+		WriteConstructorBody(klass);
+		CloseBlock();
+	}
+
+	void WriteDestructFields!(FuSymbol? symbol)
+	{
+		if (symbol != null) {
+			WriteDestructFields(symbol.Next);
+			if (symbol is FuField field)
+				WriteDestruct(field);
+		}
+	}
+
+	protected void WriteDestructor!(FuClass klass)
+	{
+		if (!NeedsDestructor(klass))
+			return;
+		WriteNewLine();
+		WriteXstructorSignature("Destruct", klass);
+		WriteNewLine();
+		OpenBlock();
+		WriteDestructFields(klass.First);
+		if (klass.Parent is FuClass baseClass && NeedsDestructor(baseClass)) {
+			WriteName(baseClass);
+			WriteLine("_Destruct(&self->base);");
+		}
+		CloseBlock();
+	}
+
+	void WriteNewDelete!(FuClass klass, bool define)
+	{
+		if (!klass.IsPublic || klass.Constructor == null || klass.Constructor.Visibility != FuVisibility.Public)
+			return;
+
+		WriteNewLine();
+		WriteName(klass);
+		Write(" *");
+		WriteName(klass);
+		Write("_New(void)");
+		if (define) {
+			WriteNewLine();
+			OpenBlock();
+			WriteName(klass);
+			Write(" *self = (");
+			WriteName(klass);
+			Write(" *) malloc(sizeof(");
+			WriteName(klass);
+			WriteLine("));");
+			if (NeedsConstructor(klass)) {
+				WriteLine("if (self != NULL)");
+				this.Indent++;
+				WriteName(klass);
+				WriteLine("_Construct(self);");
+				this.Indent--;
+			}
+			WriteLine("return self;");
+			CloseBlock();
+			WriteNewLine();
+		}
+		else
+			WriteCharLine(';');
+
+		Write("void ");
+		WriteName(klass);
+		Write("_Delete(");
+		WriteName(klass);
+		Write(" *self)");
+		if (define) {
+			WriteNewLine();
+			OpenBlock();
+			if (NeedsDestructor(klass)) {
+				WriteLine("if (self == NULL)");
+				this.Indent++;
+				WriteLine("return;");
+				this.Indent--;
+				WriteName(klass);
+				WriteLine("_Destruct(self);");
+			}
+			WriteLine("free(self);");
+			CloseBlock();
+		}
+		else
+			WriteCharLine(';');
+	}
+
+	protected override void WriteMethod!(FuMethod method)
+	{
+		if (!method.IsLive || method.CallType == FuCallType.Abstract)
+			return;
+		this.SwitchesWithGoto.Clear();
+		WriteNewLine();
+		WriteSignature(method);
+		for (FuVar? param = method.Parameters.FirstParameter(); param != null; param = param.NextParameter()) {
+			if (NeedToDestruct(param))
+				this.VarsToDestruct.Add(param);
+		}
+		WriteNewLine();
+		this.CurrentMethod = method;
+		OpenBlock();
+		if (method.Body is FuBlock block) {
+			List<FuStatement#> statements = block.Statements;
+			if (!block.CompletesNormally())
+				WriteStatements(statements);
+			else if (method.Throws && method.Type.Id == FuId.VoidType) {
+				if (statements.Count == 0 || !TryWriteCallAndReturn(statements, statements.Count - 1, null)) {
+					WriteStatements(statements);
+					WriteDestructAll();
+					WriteLine("return true;");
+				}
+			}
+			else {
+				WriteStatements(statements);
+				WriteDestructAll();
+			}
+		}
+		else
+			method.Body.AcceptStatement(this);
+		this.VarsToDestruct.Clear();
+		CloseBlock();
+		this.CurrentMethod = null;
+	}
+
+	void WriteTryParseLibrary!(string signature, string call)
+	{
+		WriteNewLine();
+		Write("static bool Fu");
+		WriteLine(signature);
+		OpenBlock();
+		WriteLine("if (*str == '\\0')");
+		WriteLine("\treturn false;");
+		WriteLine("char *end;");
+		Write("*result = strto");
+		Write(call);
+		WriteLine(");");
+		WriteLine("return *end == '\\0';");
+		CloseBlock();
+	}
+
+	void WriteLibrary!()
+	{
+		if (this.IntTryParse)
+			WriteTryParseLibrary("Int_TryParse(int *result, const char *str, int base)", "l(str, &end, base");
+		if (this.LongTryParse)
+			WriteTryParseLibrary("Long_TryParse(int64_t *result, const char *str, int base)", "ll(str, &end, base");
+		if (this.DoubleTryParse)
+			WriteTryParseLibrary("Double_TryParse(double *result, const char *str)", "d(str, &end");
+		if (this.StringAssign) {
+			WriteNewLine();
+			WriteLine("static void FuString_Assign(char **str, char *value)");
+			OpenBlock();
+			WriteLine("free(*str);");
+			WriteLine("*str = value;");
+			CloseBlock();
+		}
+		if (this.StringSubstring) {
+			WriteNewLine();
+			WriteLine("static char *FuString_Substring(const char *str, int len)");
+			OpenBlock();
+			WriteLine("char *p = malloc(len + 1);");
+			WriteLine("memcpy(p, str, len);");
+			WriteLine("p[len] = '\\0';");
+			WriteLine("return p;");
+			CloseBlock();
+		}
+		if (this.StringAppend) {
+			WriteNewLine();
+			WriteLine("static void FuString_AppendSubstring(char **str, const char *suffix, size_t suffixLen)");
+			OpenBlock();
+			WriteLine("if (suffixLen == 0)");
+			WriteLine("\treturn;");
+			WriteLine("size_t prefixLen = *str == NULL ? 0 : strlen(*str);");
+			WriteLine("*str = realloc(*str, prefixLen + suffixLen + 1);");
+			WriteLine("memcpy(*str + prefixLen, suffix, suffixLen);");
+			WriteLine("(*str)[prefixLen + suffixLen] = '\\0';");
+			CloseBlock();
+			WriteNewLine();
+			WriteLine("static void FuString_Append(char **str, const char *suffix)");
+			OpenBlock();
+			WriteLine("FuString_AppendSubstring(str, suffix, strlen(suffix));");
+			CloseBlock();
+		}
+		if (this.StringIndexOf) {
+			WriteNewLine();
+			WriteLine("static int FuString_IndexOf(const char *str, const char *needle)");
+			OpenBlock();
+			WriteLine("const char *p = strstr(str, needle);");
+			WriteLine("return p == NULL ? -1 : (int) (p - str);");
+			CloseBlock();
+		}
+		if (this.StringLastIndexOf) {
+			WriteNewLine();
+			WriteLine("static int FuString_LastIndexOf(const char *str, const char *needle)");
+			OpenBlock();
+			WriteLine("if (needle[0] == '\\0')");
+			WriteLine("\treturn (int) strlen(str);");
+			WriteLine("int result = -1;");
+			WriteLine("const char *p = strstr(str, needle);");
+			Write("while (p != NULL) ");
+			OpenBlock();
+			WriteLine("result = (int) (p - str);");
+			WriteLine("p = strstr(p + 1, needle);");
+			CloseBlock();
+			WriteLine("return result;");
+			CloseBlock();
+		}
+		if (this.StringEndsWith) {
+			WriteNewLine();
+			WriteLine("static bool FuString_EndsWith(const char *str, const char *suffix)");
+			OpenBlock();
+			WriteLine("size_t strLen = strlen(str);");
+			WriteLine("size_t suffixLen = strlen(suffix);");
+			WriteLine("return strLen >= suffixLen && memcmp(str + strLen - suffixLen, suffix, suffixLen) == 0;");
+			CloseBlock();
+		}
+		if (this.StringReplace) {
+			WriteNewLine();
+			WriteLine("static char *FuString_Replace(const char *s, const char *oldValue, const char *newValue)");
+			OpenBlock();
+			Write("for (char *result = NULL;;) ");
+			OpenBlock();
+			WriteLine("const char *p = strstr(s, oldValue);");
+			WriteLine("if (p == NULL) {");
+			WriteLine("\tFuString_Append(&result, s);");
+			WriteLine("\treturn result == NULL ? strdup(\"\") : result;");
+			WriteCharLine('}');
+			WriteLine("FuString_AppendSubstring(&result, s, p - s);");
+			WriteLine("FuString_Append(&result, newValue);");
+			WriteLine("s = p + strlen(oldValue);");
+			CloseBlock();
+			CloseBlock();
+		}
+		if (this.StringFormat) {
+			WriteNewLine();
+			WriteLine("static char *FuString_Format(const char *format, ...)");
+			OpenBlock();
+			WriteLine("va_list args1;");
+			WriteLine("va_start(args1, format);");
+			WriteLine("va_list args2;");
+			WriteLine("va_copy(args2, args1);");
+			WriteLine("size_t len = vsnprintf(NULL, 0, format, args1) + 1;");
+			WriteLine("va_end(args1);");
+			WriteLine("char *str = malloc(len);");
+			WriteLine("vsnprintf(str, len, format, args2);");
+			WriteLine("va_end(args2);");
+			WriteLine("return str;");
+			CloseBlock();
+		}
+		if (this.MatchFind) {
+			WriteNewLine();
+			WriteLine("static bool FuMatch_Find(GMatchInfo **match_info, const char *input, const char *pattern, GRegexCompileFlags options)");
+			OpenBlock();
+			WriteLine("GRegex *regex = g_regex_new(pattern, options, 0, NULL);");
+			WriteLine("bool result = g_regex_match(regex, input, 0, match_info);");
+			WriteLine("g_regex_unref(regex);");
+			WriteLine("return result;");
+			CloseBlock();
+		}
+		if (this.MatchPos) {
+			WriteNewLine();
+			WriteLine("static int FuMatch_GetPos(const GMatchInfo *match_info, int which)");
+			OpenBlock();
+			WriteLine("int start;");
+			WriteLine("int end;");
+			WriteLine("g_match_info_fetch_pos(match_info, 0, &start, &end);");
+			WriteLine("switch (which) {");
+			WriteLine("case 0:");
+			WriteLine("\treturn start;");
+			WriteLine("case 1:");
+			WriteLine("\treturn end;");
+			WriteLine("default:");
+			WriteLine("\treturn end - start;");
+			WriteCharLine('}');
+			CloseBlock();
+		}
+		if (this.PtrConstruct) {
+			WriteNewLine();
+			WriteLine("static void FuPtr_Construct(void **ptr)");
+			OpenBlock();
+			WriteLine("*ptr = NULL;");
+			CloseBlock();
+		}
+		if (this.SharedMake || this.SharedAddRef || this.SharedRelease) {
+			WriteNewLine();
+			WriteLine("typedef void (*FuMethodPtr)(void *);");
+			WriteLine("typedef struct {");
+			this.Indent++;
+			WriteLine("size_t count;");
+			WriteLine("size_t unitSize;");
+			WriteLine("size_t refCount;");
+			WriteLine("FuMethodPtr destructor;");
+			this.Indent--;
+			WriteLine("} FuShared;");
+		}
+		if (this.SharedMake) {
+			WriteNewLine();
+			WriteLine("static void *FuShared_Make(size_t count, size_t unitSize, FuMethodPtr constructor, FuMethodPtr destructor)");
+			OpenBlock();
+			WriteLine("FuShared *self = (FuShared *) malloc(sizeof(FuShared) + count * unitSize);");
+			WriteLine("self->count = count;");
+			WriteLine("self->unitSize = unitSize;");
+			WriteLine("self->refCount = 1;");
+			WriteLine("self->destructor = destructor;");
+			Write("if (constructor != NULL) ");
+			OpenBlock();
+			WriteLine("for (size_t i = 0; i < count; i++)");
+			WriteLine("\tconstructor((char *) (self + 1) + i * unitSize);");
+			CloseBlock();
+			WriteLine("return self + 1;");
+			CloseBlock();
+		}
+		if (this.SharedAddRef) {
+			WriteNewLine();
+			WriteLine("static void *FuShared_AddRef(void *ptr)");
+			OpenBlock();
+			WriteLine("if (ptr != NULL)");
+			WriteLine("\t((FuShared *) ptr)[-1].refCount++;");
+			WriteLine("return ptr;");
+			CloseBlock();
+		}
+		if (this.SharedRelease || this.SharedAssign) {
+			WriteNewLine();
+			WriteLine("static void FuShared_Release(void *ptr)");
+			OpenBlock();
+			WriteLine("if (ptr == NULL)");
+			WriteLine("\treturn;");
+			WriteLine("FuShared *self = (FuShared *) ptr - 1;");
+			WriteLine("if (--self->refCount != 0)");
+			WriteLine("\treturn;");
+			Write("if (self->destructor != NULL) ");
+			OpenBlock();
+			WriteLine("for (size_t i = self->count; i > 0;)");
+			WriteLine("\tself->destructor((char *) ptr + --i * self->unitSize);");
+			CloseBlock();
+			WriteLine("free(self);");
+			CloseBlock();
+		}
+		if (this.SharedAssign) {
+			WriteNewLine();
+			WriteLine("static void FuShared_Assign(void **ptr, void *value)");
+			OpenBlock();
+			WriteLine("FuShared_Release(*ptr);");
+			WriteLine("*ptr = value;");
+			CloseBlock();
+		}
+		foreach ((string name, string content) in this.ListFrees) {
+			WriteNewLine();
+			Write("static void FuList_Free");
+			Write(name);
+			WriteLine("(void *ptr)");
+			OpenBlock();
+			Write(content);
+			WriteCharLine(';');
+			CloseBlock();
+		}
+		if (this.TreeCompareInteger) {
+			WriteNewLine();
+			Write("static int FuTree_CompareInteger(gconstpointer pa, gconstpointer pb, gpointer user_data)");
+			OpenBlock();
+			WriteLine("gintptr a = (gintptr) pa;");
+			WriteLine("gintptr b = (gintptr) pb;");
+			WriteLine("return (a > b) - (a < b);");
+			CloseBlock();
+		}
+		if (this.TreeCompareString) {
+			WriteNewLine();
+			Write("static int FuTree_CompareString(gconstpointer a, gconstpointer b, gpointer user_data)");
+			OpenBlock();
+			WriteLine("return strcmp((const char *) a, (const char *) b);");
+			CloseBlock();
+		}
+		foreach (FuId typeId in this.Compares) {
+			WriteNewLine();
+			Write("static int FuCompare_");
+			WriteNumericType(typeId);
+			WriteLine("(const void *pa, const void *pb)");
+			OpenBlock();
+			WriteNumericType(typeId);
+			Write(" a = *(const ");
+			WriteNumericType(typeId);
+			WriteLine(" *) pa;");
+			WriteNumericType(typeId);
+			Write(" b = *(const ");
+			WriteNumericType(typeId);
+			WriteLine(" *) pb;");
+			switch (typeId) {
+			case FuId.ByteRange:
+			case FuId.SByteRange:
+			case FuId.ShortRange:
+			case FuId.UShortRange:
+				// subtraction can't overflow int
+				WriteLine("return a - b;");
+				break;
+			default:
+				WriteLine("return (a > b) - (a < b);");
+				break;
+			}
+			CloseBlock();
+		}
+		foreach (FuId typeId in this.Contains) {
+			WriteNewLine();
+			Write("static bool FuArray_Contains_");
+			if (typeId == FuId.None)
+				Write("object(const void * const *a, size_t len, const void *");
+			else if (typeId == FuId.StringPtrType)
+				Write("string(const char * const *a, size_t len, const char *");
+			else {
+				WriteNumericType(typeId);
+				Write("(const ");
+				WriteNumericType(typeId);
+				Write(" *a, size_t len, ");
+				WriteNumericType(typeId);
+			}
+			WriteLine(" value)");
+			OpenBlock();
+			WriteLine("for (size_t i = 0; i < len; i++)");
+			if (typeId == FuId.StringPtrType)
+				WriteLine("\tif (strcmp(a[i], value) == 0)");
+			else
+				WriteLine("\tif (a[i] == value)");
+			WriteLine("\t\treturn true;");
+			WriteLine("return false;");
+			CloseBlock();
+		}
+	}
+
+	protected void WriteResources!(SortedDictionary<string(), List<byte>()> resources)
+	{
+		if (resources.Count == 0)
+			return;
+		WriteNewLine();
+		foreach ((string name, List<byte> content) in resources) {
+			Write("static const ");
+			WriteNumericType(FuId.ByteRange);
+			WriteChar(' ');
+			WriteResource(name, -1);
+			WriteChar('[');
+			VisitLiteralLong(content.Count);
+			WriteLine("] = {");
+			WriteChar('\t');
+			WriteBytes(content);
+			WriteLine(" };");
+		}
+	}
+
+	public override void WriteProgram!(FuProgram program)
+	{
+		this.WrittenClasses.Clear();
+		this.InHeaderFile = true;
+		OpenStringWriter();
+		foreach (FuClass klass in program.Classes) {
+			WriteNewDelete(klass, false);
+			WriteSignatures(klass, true);
+		}
+
+		CreateHeaderFile(".h");
+		WriteLine("#ifdef __cplusplus");
+		WriteLine("extern \"C\" {");
+		WriteLine("#endif");
+		WriteTypedefs(program, true);
+		CloseStringWriter();
+		WriteNewLine();
+		WriteLine("#ifdef __cplusplus");
+		WriteCharLine('}');
+		WriteLine("#endif");
+		CloseFile();
+
+		this.InHeaderFile = false;
+		this.IntTryParse = false;
+		this.LongTryParse = false;
+		this.DoubleTryParse = false;
+		this.StringAssign = false;
+		this.StringSubstring = false;
+		this.StringAppend = false;
+		this.StringIndexOf = false;
+		this.StringLastIndexOf = false;
+		this.StringEndsWith = false;
+		this.StringReplace = false;
+		this.StringFormat = false;
+		this.MatchFind = false;
+		this.MatchPos = false;
+		this.PtrConstruct = false;
+		this.SharedMake = false;
+		this.SharedAddRef = false;
+		this.SharedRelease = false;
+		this.SharedAssign = false;
+		this.ListFrees.Clear();
+		this.TreeCompareInteger = false;
+		this.TreeCompareString = false;
+		this.Compares.Clear();
+		this.Contains.Clear();
+		OpenStringWriter();
+		foreach (FuClass klass in program.Classes)
+			WriteClass(klass, program);
+		WriteResources(program.Resources);
+		foreach (FuClass klass in program.Classes) {
+			this.CurrentClass = klass;
+			WriteConstructor(klass);
+			WriteDestructor(klass);
+			WriteNewDelete(klass, true);
+			WriteMethods(klass);
+		}
+
+		Include("stdlib.h");
+		CreateImplementationFile(program, ".h");
+		WriteLibrary();
+		WriteRegexOptionsEnum(program);
+		WriteTypedefs(program, false);
+		CloseStringWriter();
+		CloseFile();
+	}
+}

@@ -1,0 +1,16 @@
+public class Base
+{
+	protected bool Foo() => true;
+}
+
+public class Test : Base
+{
+	bool Quux() => Foo();
+
+	public static bool Run()
+	{
+		Test() o;
+		return o.Foo()
+			&& o.Quux();
+	}
+}

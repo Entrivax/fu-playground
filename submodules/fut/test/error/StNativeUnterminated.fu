@@ -1,0 +1,5 @@
+public static class Test
+{
+	public static bool Run()
+	{
+		native { //ERROR: Expected '}', got end-of-file //ERROR: Expected '}', got end-of-file //ERROR: Expected '}', got end-of-file

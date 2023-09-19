@@ -1,0 +1,9 @@
+public static class Test
+{
+	public static bool Run()
+	{
+		int i;
+		return !i.TryParse("foo") && i.TryParse("42") && i == 42 //FAIL: java py swift cl
+			&& i.TryParse("c0d3", 16) && i == 0xc0d3;
+	}
+}
