@@ -12,10 +12,55 @@ const srcFiles: Record<string, monaco.editor.ITextModel> = {}
 let rightEditor: monaco.editor.IStandaloneCodeEditor
 const outFiles: Record<string, monaco.editor.ITextModel> = {}
 
+const { onBuildCall, addOnBuildListener } = (() => {
+    const listeners: (() => void)[] = []
+    return {
+        onBuildCall: () => {
+            listeners.forEach(l => l())
+        },
+        addOnBuildListener: (listener: () => void) => {
+            listeners.push(listener)
+        }
+    }
+})();
+const { onRightModelChangeCall, addOnRightModeChangelListener } = (() => {
+    const listeners: ((model: monaco.editor.ITextModel, path: string) => void)[] = []
+    return {
+        onRightModelChangeCall: (model: monaco.editor.ITextModel, path: string) => {
+            listeners.forEach(l => l(model, path))
+        },
+        addOnRightModeChangelListener: (listener: (model: monaco.editor.ITextModel, path: string) => void) => {
+            listeners.push(listener)
+        }
+    }
+})();
+
 const deferedBuild = defer(() => {
     build()
-    openOutFile(Object.keys(outFiles)[0])
+    let files = Object.keys(outFiles)
+    if (files.indexOf(previousOpenedTargetFile) === -1) {
+        openOutFile(files[0])
+    } else {
+        openOutFile(previousOpenedTargetFile)
+    }
 }, 500)
+
+const targetLanguages = [
+    { name: 'C', value: 'c', getGenerator: () => new libFut.GenC() },
+    { name: 'OpenCL C', value: 'cl', getGenerator: () => new libFut.GenCl() },
+    { name: 'C++', value: 'cpp', getGenerator: () => new libFut.GenCpp() },
+    { name: 'C#', value: 'cs', getGenerator: () => new libFut.GenCs() },
+    { name: 'D', value: 'd', getGenerator: () => new libFut.GenD() },
+    { name: 'Java', value: 'java', getGenerator: () => new libFut.GenJava() },
+    { name: 'JavaScript', value: 'js', getGenerator: () => new libFut.GenJs() },
+    { name: 'Python', value: 'py', getGenerator: () => new libFut.GenPy() },
+    { name: 'Swift', value: 'swift', getGenerator: () => new libFut.GenSwift() },
+    { name: 'TypeScript', value: 'ts', getGenerator: () => new libFut.GenTs().withGenFullCode() },
+    { name: 'TypeScript typings', value: 'd.ts', getGenerator: () => new libFut.GenTs() },
+]
+
+let selectedTargetLanguage = targetLanguages[0].value
+let previousOpenedTargetFile = ''
 
 function App() {
     const leftEditorContainer = <div class="editor-container"></div>
@@ -36,16 +81,43 @@ function App() {
         })
     })
 
+    let targetLanguageSelect: HTMLSelectElement
+
     return <div class="app">
+        <div>
+            <div class="form-group">
+                <label for="target-language">Target language</label>
+                <select ref={e => targetLanguageSelect = e} onChange={() => { selectedTargetLanguage = targetLanguageSelect.value; deferedBuild() }}>
+                    { targetLanguages.map(lang => <option value={lang.value}>{lang.name}</option>) }
+                </select>
+            </div>
+
+        </div>
         <div class="editors-columns">
             <div class="editor-column">
                 { leftEditorContainer }
             </div>
             <div class="editor-column">
+                <TabSelector />
                 { rightEditorContainer }
             </div>
         </div>
     </div>
+}
+
+function TabSelector() {
+    let tabsRef: HTMLDivElement = <div class="tab-selector"></div>
+    function openTab(path: string) {
+        openOutFile(path)
+    }
+    addOnBuildListener(() => {
+        tabsRef.innerHTML = ''
+        tabsRef.append(...Object.keys(outFiles).map(path => <div class={"tab"} data-path={path} onClick={() => openTab(path)}>{path}</div>))
+    })
+    addOnRightModeChangelListener((model, path) => {
+        tabsRef.querySelectorAll('.tab').forEach(tab => tab.getAttribute('data-path') === path ? tab.classList.add('active') : tab.classList.remove('active'))
+    })
+    return tabsRef
 }
 
 function createSrcFile(path: string, content: string) {
@@ -59,7 +131,9 @@ function openSrcFile(path: string) {
 
 function openOutFile(path: string) {
     if (!path || !outFiles[path]) return
+    previousOpenedTargetFile = path
     rightEditor.setModel(outFiles[path])
+    onRightModelChangeCall(outFiles[path], path)
 }
 
 class FileResourceSema extends libFut.FuSema
@@ -153,45 +227,16 @@ function emit(program: libFut.FuProgram, lang: string, namespace: string, output
 {
 	let gen;
 	switch (lang) {
-	case "c":
-		gen = new libFut.GenC();
-		break;
-	case "cpp":
-		gen = new libFut.GenCpp();
-		break;
-	case "cs":
-		gen = new libFut.GenCs();
-		break;
-	case "d":
-		gen = new libFut.GenD();
-		break;
 	case "java":
-		gen = new libFut.GenJava();
         outputFile = ''
 		break;
-	case "js":
-	case "mjs":
-		gen = new libFut.GenJs();
-		break;
-	case "py":
-		gen = new libFut.GenPy();
-		break;
-	case "swift":
-		gen = new libFut.GenSwift();
-		break;
-	case "ts":
-		gen = new libFut.GenTs().withGenFullCode();
-		break;
-	case "d.ts":
-		gen = new libFut.GenTs();
-		break;
-	case "cl":
-		gen = new libFut.GenCl();
-		break;
-	default:
-		console.error(`fut: ERROR: Unknown language: ${lang}`);
-		return;
 	}
+    const languageTarget = targetLanguages.find(l => l.value === lang)
+    if (!languageTarget) {
+        console.error(`fut: ERROR: Unknown target language ${lang}`);
+        return;
+    }
+    gen = languageTarget.getGenerator()
 	gen.namespace = namespace;
 	gen.outputFile = outputFile;
 	gen.setHost(host);
@@ -202,10 +247,19 @@ function emit(program: libFut.FuProgram, lang: string, namespace: string, output
 }
 
 function disposeOutModels() {
-    for (const path in outFiles) {
+    for (const path of Object.keys(outFiles)) {
         outFiles[path].dispose()
         delete outFiles[path]
     }
+}
+
+function getExtensionFromLanguage(lang: string) {
+    const languageTarget = targetLanguages.find(l => l.value === lang)
+    if (!languageTarget) {
+        console.error(`fut: ERROR: Unknown target language ${lang}`);
+        return;
+    }
+    return languageTarget.value
 }
 
 function build() {
@@ -215,8 +269,7 @@ function build() {
     const inputFiles = Object.keys(srcFiles);
     const referencedFiles = [];
     const sema = new FileResourceSema();
-    let lang = 'js';
-    let outputFile = 'output.js';
+    let outputFile = `output.${getExtensionFromLanguage(selectedTargetLanguage)}`;
     let namespace = "";
     const host = new FileGenHost();
     parser.setHost(host);
@@ -235,11 +288,12 @@ function build() {
             console.error(`fut: ERROR: Failed to parse input files`);
             return;
         }
-        emit(program, lang, namespace, outputFile, host);
+        emit(program, selectedTargetLanguage, namespace, outputFile, host);
     }
     catch (e) {
         console.error(`fut: ERROR: ${(e as Error)?.message || e}`);
     }
+    onBuildCall()
 }
 
 function defer(func, delay) {
