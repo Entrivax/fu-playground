@@ -1,8 +1,15 @@
-# VanillaJS JSX
+# Fusion Playground
 
-This is an simple example project using JSX with VanillaJS. It uses Babel and Rollup to transpile and pack jsx files in the `src` folder.
+This repository contains the sources for a Fusion Playground.
+
+This project is not official and was made just for fun.
 
 ## Prerequisite
+
+Clone the repository and its submodules with:
+```sh
+git clone --recursive https://github.com/Entrivax/fu-playground
+```
 
 You need to install the npm packages before building the project:
 ```sh
@@ -21,4 +28,6 @@ To build-watch the project:
 npm run watch
 ```
 
-You can then open the `index.html` file to see the result.
+Then open the `index.html` file through an HTTP server.
+
+To deploy the project after build, copy the file `index.html` and the folder `dist` where you want to deploy it.
