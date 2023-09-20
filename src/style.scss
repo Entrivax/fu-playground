@@ -7,6 +7,10 @@ html, body {
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
 }
 
+button, input {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
 * {
     box-sizing: border-box;
 }
@@ -80,6 +84,7 @@ html, body {
     cursor: pointer;
     border-bottom: 2px solid transparent;
     font-family: 'Courier New', Courier, monospace;
+    font-weight: 700;
 
     &:hover {
         border-bottom: 2px solid #cccccc;
@@ -159,5 +164,45 @@ html, body {
     a, a:visited, a:hover, a:active {
         color: #fff;
         cursor: pointer;
+    }
+}
+
+.context-menu {
+    position: fixed;
+
+    .context-menu-items {
+        min-width: 5em;
+        display: flex;
+        flex-direction: column;
+        gap: 0.25em;
+        background: #1e1e1e;
+        color: #cccccc;
+        border: 1px solid #454545;
+
+        .context-menu-title {
+            display: flex;
+            padding: 0.25em 0.5em;
+            font-weight: 700;
+        }
+
+        hr {
+            margin: 0.25em 0.5em;
+            padding: 0;
+            border-top: 0px solid transparent;
+            height: 1px;
+            background: #454545;
+        }
+
+        .context-menu-action {
+            display: flex;
+            padding: 0.25em 0.5em;
+            cursor: pointer;
+            border: 0px solid transparent;
+            color: #cccccc;
+            background: transparent;
+            &:hover {
+                background: #5e5e5e;
+            }
+        }
     }
 }

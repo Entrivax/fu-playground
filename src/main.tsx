@@ -24,13 +24,35 @@ const { onBuildCall, addOnBuildListener } = (() => {
         }
     }
 })();
-const { onRightModelChangeCall, addOnRightModeChangelListener } = (() => {
-    const listeners: ((model: monaco.editor.ITextModel, path: string) => void)[] = []
+const { onSrcFileUpdateCall, addOnSrcFileUpdateListener } = (() => {
+    const listeners: (() => void)[] = []
     return {
-        onRightModelChangeCall: (model: monaco.editor.ITextModel, path: string) => {
-            listeners.forEach(l => l(model, path))
+        onSrcFileUpdateCall: () => {
+            listeners.forEach(l => l())
         },
-        addOnRightModeChangelListener: (listener: (model: monaco.editor.ITextModel, path: string) => void) => {
+        addOnSrcFileUpdateListener: (listener: () => void) => {
+            listeners.push(listener)
+        }
+    }
+})();
+const { onLeftModelChangeCall, addOnLeftModeChangelListener } = (() => {
+    const listeners: ((path: string | null) => void)[] = []
+    return {
+        onLeftModelChangeCall: (path: string | null) => {
+            listeners.forEach(l => l(path))
+        },
+        addOnLeftModeChangelListener: (listener: (path: string | null) => void) => {
+            listeners.push(listener)
+        }
+    }
+})();
+const { onRightModelChangeCall, addOnRightModeChangelListener } = (() => {
+    const listeners: ((path: string) => void)[] = []
+    return {
+        onRightModelChangeCall: (path: string) => {
+            listeners.forEach(l => l(path))
+        },
+        addOnRightModeChangelListener: (listener: (path: string) => void) => {
             listeners.push(listener)
         }
     }
@@ -45,6 +67,10 @@ const deferedBuild = defer(() => {
         openOutFile(previousOpenedTargetFile)
     }
 }, 500)
+
+addOnSrcFileUpdateListener(() => {
+    deferedBuild()
+})
 
 const targetLanguages = [
     { name: 'C', value: 'c', getGenerator: () => new libFut.GenC() },
@@ -61,27 +87,26 @@ const targetLanguages = [
 ]
 
 let selectedTargetLanguage = targetLanguages[0].value
+let previousOpenedSourceFile: string | null = ''
 let previousOpenedTargetFile = ''
 
 function App() {
     const leftEditorContainer = <div class="editor-container"></div>
     const rightEditorContainer = <div class="editor-container"></div>
-    setTimeout(() => {
-        leftEditor = monaco.editor.create(leftEditorContainer, {
-            theme: "vs-dark",
-            lineNumbers: 'on',
-            automaticLayout: true
-        })
-        leftEditor.onDidChangeModelContent(() => {
-            deferedBuild()
-        })
-        rightEditor = window.monaco.editor.create(rightEditorContainer, {
-            theme: "vs-dark",
-            lineNumbers: 'on',
-            readOnly: true,
-            value: ``,
-            automaticLayout: true
-        })
+    leftEditor = monaco.editor.create(leftEditorContainer, {
+        theme: "vs-dark",
+        lineNumbers: 'on',
+        automaticLayout: true
+    })
+    leftEditor.onDidChangeModelContent(() => {
+        deferedBuild()
+    })
+    rightEditor = window.monaco.editor.create(rightEditorContainer, {
+        theme: "vs-dark",
+        lineNumbers: 'on',
+        readOnly: true,
+        value: ``,
+        automaticLayout: true
     })
 
     let targetLanguageSelect: HTMLSelectElement
@@ -98,6 +123,7 @@ function App() {
         </div>
         <div class="editors-columns">
             <div class="editor-column">
+                <SrcTabSelector />
                 { leftEditorContainer }
             </div>
             <div class="editor-column">
@@ -139,6 +165,50 @@ function ErrorsReporter() {
     return errorsRef
 }
 
+function SrcTabSelector() {
+    let tabsRef: HTMLDivElement = <div class="tab-selector"></div>
+    function openTab(path: string) {
+        openSrcFile(path)
+    }
+    addOnSrcFileUpdateListener(() => {
+        tabsRef.innerHTML = ''
+        tabsRef.append(...Object.keys(srcFiles).map(path => {
+            let close: (() => void) | null = null
+            return <div
+                class="tab"
+                data-path={path}
+                onClick={() => openTab(path)}
+                onContextMenu={(e: MouseEvent) => close = openContextMenu(e, () => <div class="context-menu-items">
+                    <div class="context-menu-title">{path}</div>
+                    <hr/>
+                    <button class="context-menu-action" onClick={() => { close?.(); promptRenameSrc(path) }}>Rename</button>
+                    <button class="context-menu-action" onClick={() => { close?.(); removeSrcFile(path) }}>Delete</button>
+                </div>)}
+            >{path}</div>
+        }))
+        tabsRef.append(<div class="tab" onClick={() => addNewSrcFile()}>+</div>)
+        updateSelected(previousOpenedSourceFile)
+    })
+    addOnLeftModeChangelListener((path) => {
+        updateSelected(path)
+    })
+
+    function updateSelected(path) {
+        tabsRef.querySelectorAll('.tab').forEach(tab => tab.getAttribute('data-path') === path ? tab.classList.add('active') : tab.classList.remove('active'))
+    }
+    return tabsRef
+}
+
+function addNewSrcFile() {
+    let newFileTemplate = (i: number) => i === 0 ? `new_file.fu` : `new_file_${i}.fu`
+    let i = 0
+    let currentFileName: string
+    while (srcFiles[currentFileName = newFileTemplate(i)]) {
+        i++
+    }
+    createSrcFile(currentFileName, '')
+}
+
 function TabSelector() {
     let tabsRef: HTMLDivElement = <div class="tab-selector"></div>
     function openTab(path: string) {
@@ -147,27 +217,100 @@ function TabSelector() {
     addOnBuildListener(() => {
         tabsRef.innerHTML = ''
         tabsRef.append(...Object.keys(outFiles).map(path => <div class="tab" data-path={path} onClick={() => openTab(path)}>{path}</div>))
+        updateSelected(previousOpenedTargetFile)
     })
-    addOnRightModeChangelListener((model, path) => {
+    addOnRightModeChangelListener((path) => {
+        updateSelected(path)
+    })
+
+    function updateSelected(path) {
         tabsRef.querySelectorAll('.tab').forEach(tab => tab.getAttribute('data-path') === path ? tab.classList.add('active') : tab.classList.remove('active'))
-    })
+    }
     return tabsRef
 }
 
 function createSrcFile(path: string, content: string) {
     const model = monaco.editor.createModel(content, 'fusion')
     srcFiles[path] = model
+    openSrcFile(path)
+    onSrcFileUpdateCall()
 }
 
-function openSrcFile(path: string) {
-    leftEditor.setModel(srcFiles[path])
+function removeSrcFile(path: string) {
+    if (!srcFiles[path]) {
+        return
+    }
+    if (previousOpenedSourceFile === path) {
+        const files = Object.keys(srcFiles)
+        const index = files.indexOf(path)
+        if (index < files.length - 1) {
+            openSrcFile(files[index + 1])
+        } else if (index > 0) {
+            openSrcFile(files[index - 1])
+        } else {
+            openSrcFile(null)
+        }
+    }
+    srcFiles[path].dispose()
+    delete srcFiles[path]
+    onSrcFileUpdateCall()
+}
+
+function promptRenameSrc(path: string) {
+    const result = prompt(`Rename file "${path}"`, path.slice(0, path.lastIndexOf('.')))
+    if (!result) {
+        return
+    }
+    const newPath = `${result}.fu`
+    renameSrcFile(path, newPath)
+}
+
+function renameSrcFile(oldPath: string, newPath: string) {
+    if (!srcFiles[oldPath]) {
+        return
+    }
+    srcFiles[newPath] = srcFiles[oldPath]
+    delete srcFiles[oldPath]
+    if (previousOpenedSourceFile === oldPath) {
+        openSrcFile(newPath)
+    }
+    onSrcFileUpdateCall()
+}
+
+function openContextMenu(e: MouseEvent, content: () => Node) {
+    e.preventDefault()
+    e.stopPropagation()
+    const contextMenu = <div class="context-menu" style={{ left: `${e.clientX}px`, top: `${e.clientY}px` }}>{ content() }</div>
+    document.body.appendChild(contextMenu)
+    const close = () => {
+        document.removeEventListener('click', documentClickHandler)
+        contextMenu.parentElement?.removeChild(contextMenu)
+    }
+    const documentClickHandler = (e: MouseEvent) => {
+        if (contextMenu.contains(e.target as Node)) {
+            return
+        }
+        e.preventDefault()
+        e.stopPropagation()
+        close()
+    }
+    document.addEventListener('click', documentClickHandler)
+    return close
+}
+
+function openSrcFile(path: string | null) {
+    if (path != null && !srcFiles[path]) return
+    const model = path == null ? null : srcFiles[path]
+    leftEditor.setModel(model)
+    previousOpenedSourceFile = path
+    onLeftModelChangeCall(path)
 }
 
 function openOutFile(path: string) {
     if (!path || !outFiles[path]) return
     previousOpenedTargetFile = path
     rightEditor.setModel(outFiles[path])
-    onRightModelChangeCall(outFiles[path], path)
+    onRightModelChangeCall(path)
 }
 
 class FileResourceSema extends libFut.FuSema
