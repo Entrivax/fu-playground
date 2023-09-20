@@ -1,0 +1,3 @@
+[submodule "submodules/fut"]
+	path = submodules/fut
+	url = https://github.com/fusionlanguage/fut
