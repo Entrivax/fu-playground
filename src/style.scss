@@ -47,6 +47,7 @@ html, body {
     border-bottom: 1px solid #454545;
     height: 2em;
     overflow-x: auto;
+    flex-shrink: 0;
 
     & {
         scrollbar-width: thin;
@@ -123,6 +124,7 @@ html, body {
     overflow: auto;
     padding: 0.5em;
     gap: 0.5rem;
+    flex-shrink: 0;
 }
 
 .form-group {
