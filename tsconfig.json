@@ -10,7 +10,7 @@
         "strict": true,
         "outDir": "dist",
         "target": "ES6",
-        "types": ["./src/types.d.ts"]
+        "typeRoots": ["./typings"]
     },
-    "include": ["src/**/*"]
+    "include": ["src/**/*", "typings/monaco.d.ts", "typings/windowExt.d.ts"]
 }

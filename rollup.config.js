@@ -6,12 +6,19 @@ import commonjs from '@rollup/plugin-commonjs';
 import copy from 'rollup-plugin-copy';
 import scss from 'rollup-plugin-scss';
 import * as sass from 'sass';
+import childProcess from 'child_process'
+import path from 'path'
+import { fileURLToPath } from 'url'
+import { readFileSync } from 'fs';
+
+const configDir = path.dirname(fileURLToPath(import.meta.url))
 
 const config = {
     input: 'src/main.tsx',
     output: {
         file: 'dist/build.js',
         format: 'iife',
+        banner: `window.libfutVersion = '${getLibFutPackageVersion()} (${getLibFutCommitHash()})';`,
         assetFileNames: '[name][extname]',
         name: 'build'
     },
@@ -33,5 +40,15 @@ const config = {
         })
     ]
 };
+
+function getLibFutPackageVersion() {
+    return JSON.parse(readFileSync(path.join(configDir, 'submodules/fut/package.json'))).version
+}
+
+function getLibFutCommitHash() {
+    return childProcess
+        .execSync('git rev-parse HEAD', { cwd: path.join(configDir, 'submodules/fut') })
+        .toString().trim().slice(0, 7)
+}
 
 export default config;

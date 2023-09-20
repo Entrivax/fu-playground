@@ -4,5 +4,3 @@ declare interface Window {
     monaco: typeof _monaco
 }
 declare var monaco: typeof _monaco
-
-declare type a = ''

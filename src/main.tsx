@@ -141,7 +141,10 @@ function Banner() {
             <h1 class="banner-title">Fusion Playground</h1>
         </div>
         <div class="banner-right">
-            <a href="https://github.com/fusionlanguage/fut">Fusion language Github</a>
+            <div class="libinfo">
+                <a href="https://github.com/fusionlanguage/fut">Fusion language Github</a>
+                <div>LibFut version: { window.libfutVersion }</div>
+            </div>
         </div>
     </div>
 }
