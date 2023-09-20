@@ -11,6 +11,7 @@ let leftEditor: monaco.editor.IStandaloneCodeEditor
 const srcFiles: Record<string, monaco.editor.ITextModel> = {}
 let rightEditor: monaco.editor.IStandaloneCodeEditor
 const outFiles: Record<string, monaco.editor.ITextModel> = {}
+let errors: { filename: string, startLine: number, startColumn: number, endLine: number, endColumn: number, message: string }[] = []
 
 const { onBuildCall, addOnBuildListener } = (() => {
     const listeners: (() => void)[] = []
@@ -86,14 +87,14 @@ function App() {
     let targetLanguageSelect: HTMLSelectElement
 
     return <div class="app">
-        <div>
+        <Banner />
+        <div class="settings">
             <div class="form-group">
                 <label for="target-language">Target language</label>
                 <select ref={e => targetLanguageSelect = e} onChange={() => { selectedTargetLanguage = targetLanguageSelect.value; deferedBuild() }}>
                     { targetLanguages.map(lang => <option value={lang.value}>{lang.name}</option>) }
                 </select>
             </div>
-
         </div>
         <div class="editors-columns">
             <div class="editor-column">
@@ -101,10 +102,41 @@ function App() {
             </div>
             <div class="editor-column">
                 <TabSelector />
+                <ErrorsReporter />
                 { rightEditorContainer }
             </div>
         </div>
     </div>
+}
+
+function Banner() {
+    return <div class="banner">
+        <div class="banner-left">
+            <h1 class="banner-title">Fusion Playground</h1>
+        </div>
+        <div class="banner-right">
+            <a href="https://github.com/fusionlanguage/fut">Fusion language Github</a>
+        </div>
+    </div>
+}
+
+function ErrorsReporter() {
+    let errorsRef: HTMLDivElement = <div class="errors-container"></div>
+    addOnBuildListener(() => {
+        errorsRef.innerHTML = ''
+        if (errors.length === 0) {
+            return
+        }
+        errorsRef.append(<div class="errors">
+            { errors.map(error => <button class="error" onClick={() => {
+                openSrcFile(error.filename)
+                leftEditor.setSelection(new monaco.Selection(error.startLine, error.startColumn, error.endLine, error.endColumn))
+                leftEditor.focus()
+            }}>{ error.filename }({ error.startLine.toString(10) }:{ error.startColumn.toString(10) }): { error.message }</button>) }
+        </div>)
+    })
+
+    return errorsRef
 }
 
 function TabSelector() {
@@ -114,7 +146,7 @@ function TabSelector() {
     }
     addOnBuildListener(() => {
         tabsRef.innerHTML = ''
-        tabsRef.append(...Object.keys(outFiles).map(path => <div class={"tab"} data-path={path} onClick={() => openTab(path)}>{path}</div>))
+        tabsRef.append(...Object.keys(outFiles).map(path => <div class="tab" data-path={path} onClick={() => openTab(path)}>{path}</div>))
     })
     addOnRightModeChangelListener((model, path) => {
         tabsRef.querySelectorAll('.tab').forEach(tab => tab.getAttribute('data-path') === path ? tab.classList.add('active') : tab.classList.remove('active'))
@@ -189,6 +221,7 @@ function createOutStream(path: string) {
 class FileGenHost extends libFut.FuConsoleHost
 {
 	#currentFile;
+    errors: { filename: string, startLine: number, startColumn: number, endLine: number, endColumn: number, message: string }[] = []
 
 	createFile(directory, filename)
 	{
@@ -206,6 +239,11 @@ class FileGenHost extends libFut.FuConsoleHost
 		else
 			this.#currentFile.close();
 	}
+
+    reportError(filename, startLine, startColumn, endLine, endColumn, message) {
+        super.reportError(filename, startLine, startColumn, endLine, endColumn, message)
+        this.errors.push({ filename, startLine, startColumn, endLine, endColumn, message })
+    }
 }
 
 function parseAndResolve(parser: libFut.FuParser, system: libFut.FuSystem, parent: libFut.FuSystem | libFut.FuProgram, files: string[], sema: libFut.FuSema, host: libFut.FuConsoleHost)
@@ -274,21 +312,22 @@ function build() {
     let outputFile = `output.${getExtensionFromLanguage(selectedTargetLanguage)}`;
     let namespace = "";
     const host = new FileGenHost();
+    errors = host.errors
     parser.setHost(host);
     sema.setHost(host);
     const system = libFut.FuSystem.new();
     let parent = system;
-    try {
+    transpileTry: try {
         if (referencedFiles.length > 0)
             parent = parseAndResolve(parser, system, parent, referencedFiles, sema, host);
         if (parent == null) {
             console.error(`fut: ERROR: Failed to parse referenced files`);
-            return;
+            break transpileTry;
         }
         const program = parseAndResolve(parser, system, parent, inputFiles, sema, host);
         if (program == null) {
             console.error(`fut: ERROR: Failed to parse input files`);
-            return;
+            break transpileTry;
         }
         emit(program, selectedTargetLanguage, namespace, outputFile, host);
     }
