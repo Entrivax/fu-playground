@@ -1,5 +1,0 @@
-public static class Test
-{
-	public Test() { //ERROR: Constructor in a static class
-	}
-}

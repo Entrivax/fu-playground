@@ -1,5 +1,0 @@
-public class Test
-{
-	public Tester() { //ERROR: Method with no return type
-	}
-}

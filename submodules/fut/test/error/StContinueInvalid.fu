@@ -1,7 +1,0 @@
-public static class Test
-{
-	public static bool Run()
-	{
-		continue; //ERROR: continue outside loop
-	}
-}

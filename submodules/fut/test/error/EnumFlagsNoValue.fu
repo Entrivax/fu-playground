@@ -1,5 +1,0 @@
-enum* DaysOfWeek
-{
-	Sunday, //ERROR: enum* symbol must be assigned a value
-	Monday
-} //ERROR: enum* symbol must be assigned a value

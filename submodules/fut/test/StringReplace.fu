@@ -1,9 +1,0 @@
-public class Test
-{
-	public static bool Run()
-	{
-		string s = "foobar";
-		string() r = s.Replace("o", "uu"); //FAIL: cl
-		return r == "fuuuubar";
-	}
-}

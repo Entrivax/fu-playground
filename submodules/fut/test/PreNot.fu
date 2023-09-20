@@ -1,9 +1,0 @@
-public static class Test
-{
-	public static bool Run()
-	{
-#if !false
-		return true;
-#endif
-	}
-}

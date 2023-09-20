@@ -1,8 +1,0 @@
-public static class Test
-{
-	public static bool Run()
-	{
-		switch (42) {
-		} //ERROR: Switch with no cases
-	}
-}

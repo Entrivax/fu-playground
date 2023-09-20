@@ -1,5 +1,0 @@
-public static class Test
-{
-	/// Returns `true //ERROR: Unterminated code in documentation comment
-	public static bool Run() => true;
-}

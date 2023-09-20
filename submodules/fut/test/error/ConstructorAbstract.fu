@@ -1,5 +1,0 @@
-public class Test
-{
-	public abstract Test() { //ERROR: Constructor cannot be abstract
-	}
-}

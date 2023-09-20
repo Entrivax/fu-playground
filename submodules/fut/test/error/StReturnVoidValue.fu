@@ -1,7 +1,0 @@
-public static class Test
-{
-	public static void Run()
-	{
-		return true; //ERROR: Void method cannot return a value
-	}
-}

@@ -1,8 +1,0 @@
-public static class Test
-{
-	public static bool Run()
-	{
-		Foo(); //ERROR: Foo not found
-		return true;
-	}
-}

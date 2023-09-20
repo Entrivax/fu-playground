@@ -1,9 +1,0 @@
-public static class Test
-{
-	const int Foo = base.Bar(); //ERROR: No base class
-
-	public static bool Run()
-	{
-		return true;
-	}
-}

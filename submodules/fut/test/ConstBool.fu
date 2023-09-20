@@ -1,9 +1,0 @@
-public static class Test
-{
-	public const bool Foo = true;
-
-	public static bool Run()
-	{
-		return Foo;
-	}
-}

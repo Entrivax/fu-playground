@@ -1,5 +1,0 @@
-public class Test
-{
-	public sealed Test() { //ERROR: Constructor cannot be sealed
-	}
-}

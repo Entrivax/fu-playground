@@ -1,8 +1,0 @@
-public static class Test
-{
-	public static bool Run()
-	{
-		string() s = $"|{foo}|"; //ERROR: foo not found
-		return true;
-	}
-}

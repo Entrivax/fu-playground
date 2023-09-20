@@ -1,8 +1,0 @@
-public static class Test
-{
-	public static bool Run()
-	{
-#elif true //ERROR: '#elif' with no matching '#if'
-		return true;
-	}
-}

@@ -1,5 +1,0 @@
-public class Test
-{
-	public Test(Test) { //ERROR: Constructor parameters not supported
-	}
-}
