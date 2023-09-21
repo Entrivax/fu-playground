@@ -3,10 +3,6 @@ import './style.scss'
 import { useRef } from './helpers.js'
 import * as libFut from '../submodules/fut/libfut.js'
 import { conf as fuConf, language as fuLanguage } from './fuLanguageDefinition.js'
-// import { loadWASM } from 'onigasm'
-// import { Registry } from 'monaco-textmate'
-// import * as languageDef from '../submodules/fut/editors/vscode/syntaxes/fusion.tmLanguage.json'
-// import { wireTmGrammars } from 'monaco-editor-textmate'
 
 let leftEditor: monaco.editor.IStandaloneCodeEditor
 const srcFiles: Record<string, monaco.editor.ITextModel> = {}
@@ -519,23 +515,9 @@ function defer(func, delay) {
 }
 
 export async function main() {
-    // await loadWASM('dist/onigasm.wasm')
-    // const registry = new Registry({
-    //     getGrammarDefinition: async () => {
-    //         return {
-    //             format: 'json',
-    //             content: JSON.stringify(languageDef)
-    //         }
-    //     }
-    // })
-    
-    // const grammars = new Map()
-    // grammars.set('fusion', 'source.fu')
-    
     window.monaco.languages.register({ id: 'fusion' })
     monaco.languages.setLanguageConfiguration('fusion', fuConf)
     monaco.languages.setMonarchTokensProvider('fusion', fuLanguage)
-    // await wireTmGrammars(monaco, registry, grammars)
 
     document.body.appendChild(
         <App></App>

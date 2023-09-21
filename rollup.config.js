@@ -30,7 +30,6 @@ const config = {
         babel({ babelHelpers: 'bundled', exclude: ['node_modules/**'], extensions: ['.js', '.jsx', '.ts', '.tsx'] }),
         copy({
             targets: [
-                { src: 'node_modules/onigasm/lib/onigasm.wasm', dest: 'dist' },
                 { src: 'node_modules/monaco-editor/min/vs', dest: 'dist/monaco' }
             ]
         }),
@@ -42,7 +41,7 @@ const config = {
 };
 
 function getLibFutPackageVersion() {
-    return JSON.parse(readFileSync(path.join(configDir, 'submodules/fut/package.json'))).version
+    return JSON.parse(readFileSync(path.join(configDir, 'submodules/fut/package.json'), { encoding: 'utf8' })).version
 }
 
 function getLibFutCommitHash() {
