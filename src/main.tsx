@@ -11,6 +11,7 @@ let leftEditor: monaco.editor.IStandaloneCodeEditor
 const srcFiles: Record<string, monaco.editor.ITextModel> = {}
 let rightEditor: monaco.editor.IStandaloneCodeEditor
 const outFiles: Record<string, monaco.editor.ITextModel> = {}
+const referenceFiles: string[] = []
 let errors: { filename: string, startLine: number, startColumn: number, endLine: number, endColumn: number, message: string }[] = []
 
 const { onBuildCall, addOnBuildListener } = (() => {
@@ -177,14 +178,20 @@ function SrcTabSelector() {
         tabsRef.innerHTML = ''
         tabsRef.append(...Object.keys(srcFiles).map(path => {
             let close: (() => void) | null = null
+            let isReferenceFile = referenceFiles.indexOf(path) !== -1
             return <div
-                class="tab"
+                class={"tab" + (isReferenceFile ? " reference-file-tab" : "")}
                 data-path={path}
                 onClick={() => openTab(path)}
                 onContextMenu={(e: MouseEvent) => close = openContextMenu(e, () => <div class="context-menu-items">
                     <div class="context-menu-title">{path}</div>
                     <hr/>
                     <button class="context-menu-action" onClick={() => { close?.(); promptRenameSrc(path) }}>Rename</button>
+                    {
+                        !isReferenceFile
+                            ? <button class="context-menu-action" onClick={() => { close?.(); markAsReferenceFile(path) }}>Set as reference file</button>
+                            : <button class="context-menu-action" onClick={() => { close?.(); unmarkAsReferenceFile(path) }}>Set as source file</button>
+                    }
                     <button class="context-menu-action" onClick={() => { close?.(); removeSrcFile(path) }}>Delete</button>
                 </div>)}
             >{path}</div>
@@ -210,6 +217,20 @@ function addNewSrcFile() {
         i++
     }
     createSrcFile(currentFileName, '')
+}
+
+function markAsReferenceFile(path: string) {
+    referenceFiles.push(path)
+    onSrcFileUpdateCall()
+}
+
+function unmarkAsReferenceFile(path: string) {
+    const index = referenceFiles.indexOf(path)
+    if (index === -1) {
+        return
+    }
+    referenceFiles.splice(index, 1)
+    onSrcFileUpdateCall()
 }
 
 function TabSelector() {
@@ -274,6 +295,10 @@ function renameSrcFile(oldPath: string, newPath: string) {
     }
     srcFiles[newPath] = srcFiles[oldPath]
     delete srcFiles[oldPath]
+    let referenceFileIndex = referenceFiles.indexOf(oldPath)
+    if (referenceFileIndex !== -1) {
+        referenceFiles.splice(referenceFileIndex, 1, newPath)
+    }
     if (previousOpenedSourceFile === oldPath) {
         openSrcFile(newPath)
     }
@@ -452,8 +477,7 @@ function build() {
     disposeOutModels()
 
     const parser = new libFut.FuParser();
-    const inputFiles = Object.keys(srcFiles);
-    const referencedFiles = [];
+    const inputFiles = Object.keys(srcFiles).filter(f => referenceFiles.indexOf(f) === -1);
     const sema = new FileResourceSema();
     let outputFile = `output.${getExtensionFromLanguage(selectedTargetLanguage)}`;
     let namespace = "";
@@ -464,8 +488,8 @@ function build() {
     const system = libFut.FuSystem.new();
     let parent = system;
     transpileTry: try {
-        if (referencedFiles.length > 0)
-            parent = parseAndResolve(parser, system, parent, referencedFiles, sema, host);
+        if (referenceFiles.length > 0)
+            parent = parseAndResolve(parser, system, parent, referenceFiles, sema, host);
         if (parent == null) {
             console.error(`fut: ERROR: Failed to parse referenced files`);
             break transpileTry;

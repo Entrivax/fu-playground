@@ -86,6 +86,10 @@ button, input {
     font-family: 'Courier New', Courier, monospace;
     font-weight: 700;
 
+    &.reference-file-tab {
+        color: #777777;
+    }
+
     &:hover {
         border-bottom: 2px solid #cccccc;
     }
