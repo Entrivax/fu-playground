@@ -5,6 +5,7 @@ import { nodeResolve } from '@rollup/plugin-node-resolve';
 import commonjs from '@rollup/plugin-commonjs';
 import copy from 'rollup-plugin-copy';
 import scss from 'rollup-plugin-scss';
+import { string } from "rollup-plugin-string";
 import * as sass from 'sass';
 import childProcess from 'child_process'
 import path from 'path'
@@ -36,6 +37,9 @@ const config = {
         scss({
             name: 'build.css',
             sass: sass
+        }),
+        string({
+            include: "**/*.ejs",
         })
     ]
 };

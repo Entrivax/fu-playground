@@ -3,6 +3,7 @@ import './style.scss'
 import { useRef } from './helpers.js'
 import * as libFut from '../submodules/fut/libfut.js'
 import { conf as fuConf, language as fuLanguage } from './fuLanguageDefinition.js'
+import { launchDebugWindow } from './debugWindow.js'
 
 let leftEditor: monaco.editor.IStandaloneCodeEditor
 const srcFiles: Record<string, monaco.editor.ITextModel> = {}
@@ -10,14 +11,15 @@ let rightEditor: monaco.editor.IStandaloneCodeEditor
 const outFiles: Record<string, monaco.editor.ITextModel> = {}
 const referenceFiles: string[] = []
 let errors: { filename: string, startLine: number, startColumn: number, endLine: number, endColumn: number, message: string }[] = []
+let debugEntryPoint: string | null = null
 
 const { onBuildCall, addOnBuildListener } = (() => {
-    const listeners: (() => void)[] = []
+    const listeners: ((fuProgram: libFut.FuProgram | null) => void)[] = []
     return {
-        onBuildCall: () => {
-            listeners.forEach(l => l())
+        onBuildCall: (fuProgram: libFut.FuProgram | null) => {
+            listeners.forEach(l => l(fuProgram))
         },
-        addOnBuildListener: (listener: () => void) => {
+        addOnBuildListener: (listener: (fuProgram: libFut.FuProgram | null) => void) => {
             listeners.push(listener)
         }
     }
@@ -114,9 +116,18 @@ function App() {
         <div class="settings">
             <div class="form-group">
                 <label for="target-language">Target language</label>
-                <select ref={e => targetLanguageSelect = e} onChange={() => { selectedTargetLanguage = targetLanguageSelect.value; deferedBuild() }}>
+                <select id="target-language" ref={e => targetLanguageSelect = e} onChange={() => { selectedTargetLanguage = targetLanguageSelect.value; deferedBuild() }}>
                     { targetLanguages.map(lang => <option value={lang.value}>{lang.name}</option>) }
                 </select>
+            </div>
+            <div>
+                <div class="form-group">
+                    <label for="debug-starting-point">Debug starting point</label>
+                    <DebugStartingPointSelector  />
+                </div>
+                <div>
+                    <button title="Run the debug starting point in a JavaScript context" onClick={() => runDebug()}>Run Debug</button>
+                </div>
             </div>
         </div>
         <div class="editors-columns">
@@ -145,6 +156,37 @@ function Banner() {
             </div>
         </div>
     </div>
+}
+
+function DebugStartingPointSelector() {
+    let availableEntryPoints: string[] = []
+    const selectRef = <select id="debug-starting-point" onChange={() => {
+        if (!selectRef.value || availableEntryPoints.indexOf(selectRef.value) === -1) return
+        debugEntryPoint = selectRef.value
+    }}></select>
+    addOnBuildListener((program) => {
+        if (!program) return
+
+        let entryPoints: string[] = []
+        ;(program.classes as libFut.FuClass[]).forEach(c => {
+            if (c.callType === libFut.FuCallType.STATIC && c.isPublic) {
+                for (let fieldName in c.dict) {
+                    const field = c.dict[fieldName]
+                    if (!(field instanceof libFut.FuMethod)) continue
+                    if (field.callType === libFut.FuCallType.STATIC && field.visibility === libFut.FuVisibility.PUBLIC) {
+                        entryPoints.push(`${c.name}.${field.name}`)
+                    }
+                }
+            }
+        })
+
+        availableEntryPoints = entryPoints
+
+        selectRef.innerHTML = ''
+        selectRef.append(...availableEntryPoints.map(entryPoint => <option value={entryPoint}>{entryPoint}</option>))
+        selectRef.value = debugEntryPoint && availableEntryPoints.indexOf(debugEntryPoint) !== -1 && debugEntryPoint || null
+    })
+    return selectRef
 }
 
 function ErrorsReporter() {
@@ -214,6 +256,54 @@ function addNewSrcFile() {
         i++
     }
     createSrcFile(currentFileName, '')
+}
+
+function runDebug() {
+    if (!debugEntryPoint) return
+    const parser = new libFut.FuParser();
+    const inputFiles = Object.keys(srcFiles);
+    const sema = new FileResourceSema();
+    let outputFile = `output.js`;
+    let namespace = "";
+    let files: Record<string, string> = {}
+    const host = new FileGenHost((path => {
+        files[path] = ''
+        return {
+            write: (data: Uint8Array | string) => {
+                if (typeof data === 'string') {
+                    files[path] += data
+                    return
+                }
+                const decoder = new TextDecoder()
+                const text = decoder.decode(data)
+                files[path] += text
+            },
+            close: (callback?: () => void) => {
+                if (callback) callback()
+            },
+            delete: () => {
+                delete files[path]
+            }
+        }
+    }));
+    errors = host.errors
+    parser.setHost(host);
+    sema.setHost(host);
+    const system = libFut.FuSystem.new();
+    let parent = system;
+    let program: libFut.FuProgram | null = null
+    try {
+        program = parseAndResolve(parser, system, parent, inputFiles, sema, host);
+        if (program == null) {
+            throw new Error('Failed to parse input files')
+        }
+        emit(program, new libFut.GenJsNoModule(), namespace, outputFile, host);
+    }
+    catch (e) {
+        console.error(`fut: ERROR: ${(e as Error)?.message || e}`);
+    }
+
+    launchDebugWindow(files[outputFile], debugEntryPoint)
 }
 
 function markAsReferenceFile(path: string) {
@@ -386,16 +476,24 @@ function createOutStream(path: string) {
     }
 }
 
+type CreateOutStream = typeof createOutStream
+
 class FileGenHost extends libFut.FuConsoleHost
 {
 	#currentFile;
     errors: { filename: string, startLine: number, startColumn: number, endLine: number, endColumn: number, message: string }[] = []
+    #createOutStream: CreateOutStream
+
+    constructor(createOutStream: CreateOutStream) {
+        super()
+        this.#createOutStream = createOutStream
+    }
 
 	createFile(directory, filename)
 	{
 		if (directory != null)
 			filename = directory ? `${directory}/${filename}` : filename;
-		this.#currentFile = createOutStream(filename);
+		this.#currentFile = this.#createOutStream(filename);
 		return this.#currentFile;
 	}
 
@@ -431,20 +529,24 @@ function parseAndResolve(parser: libFut.FuParser, system: libFut.FuSystem, paren
 	return parser.program;
 }
 
-function emit(program: libFut.FuProgram, lang: string, namespace: string, outputFile: string, host: libFut.FuConsoleHost)
+function emit(program: libFut.FuProgram, lang: string | libFut.GenBase, namespace: string, outputFile: string, host: libFut.FuConsoleHost)
 {
 	let gen;
-	switch (lang) {
-	case "java":
-        outputFile = ''
-		break;
-	}
-    const languageTarget = targetLanguages.find(l => l.value === lang)
-    if (!languageTarget) {
-        console.error(`fut: ERROR: Unknown target language ${lang}`);
-        return;
+    if (typeof lang === 'string') {
+        switch (lang) {
+        case "java":
+            outputFile = ''
+            break;
+        }
+        const languageTarget = targetLanguages.find(l => l.value === lang)
+        if (!languageTarget) {
+            console.error(`fut: ERROR: Unknown target language ${lang}`);
+            return;
+        }
+        gen = languageTarget.getGenerator()
+    } else {
+        gen = lang
     }
-    gen = languageTarget.getGenerator()
 	gen.namespace = namespace;
 	gen.outputFile = outputFile;
 	gen.setHost(host);
@@ -478,12 +580,13 @@ function build() {
     const sema = new FileResourceSema();
     let outputFile = `output.${getExtensionFromLanguage(selectedTargetLanguage)}`;
     let namespace = "";
-    const host = new FileGenHost();
+    const host = new FileGenHost(createOutStream);
     errors = host.errors
     parser.setHost(host);
     sema.setHost(host);
     const system = libFut.FuSystem.new();
     let parent = system;
+    let program: libFut.FuProgram | null = null
     transpileTry: try {
         if (referenceFiles.length > 0)
             parent = parseAndResolve(parser, system, parent, referenceFiles, sema, host);
@@ -491,7 +594,7 @@ function build() {
             console.error(`fut: ERROR: Failed to parse referenced files`);
             break transpileTry;
         }
-        const program = parseAndResolve(parser, system, parent, inputFiles, sema, host);
+        program = parseAndResolve(parser, system, parent, inputFiles, sema, host);
         if (program == null) {
             console.error(`fut: ERROR: Failed to parse input files`);
             break transpileTry;
@@ -501,7 +604,7 @@ function build() {
     catch (e) {
         console.error(`fut: ERROR: ${(e as Error)?.message || e}`);
     }
-    onBuildCall()
+    onBuildCall(program)
 }
 
 function defer(func, delay) {
@@ -531,7 +634,15 @@ export async function main() {
     {
         return "Hello, world!";
     }
+}
+
+public static class Debug
+{
+    public static void Run() {
+        Console.WriteLine(HelloFu.GetMessage());
+    }
 }`)
+        debugEntryPoint = 'Debug.Run'
         openSrcFile('main.fu')
         deferedBuild()
     }, 10)

@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Debug frame</title>
+    <style>
+        html {
+            background: #282828;
+        }
+        #debug-console-title {
+            font-family: monospace;
+            font-size: 120%;
+            font-weight: bold;
+            color: #eeeae0;
+        }
+
+        .debug-log {
+            font-family: monospace;
+            font-size: 87.5%;
+            background: #282828;
+            color: #eeeae0;
+            border-bottom: 1px solid #525252;
+            padding: 0.25rem;
+            margin: 0;
+            display: block;
+            white-space: pre-wrap;
+        }
+        .debug-log-warn {
+            background: #413A2A;
+            color: #EE9836;
+        }
+        .debug-log-error {
+            background: #4E3534;
+            color: #E46962;
+        }
+
+        .debug-log-item {
+            display: inline-block;
+        }
+    </style>
+</head>
+<body>
+    <div id="debug-console-title">
+        Console:
+    </div>
+    <div id="debug-logs"></div>
+    <script id="utils">
+        (() => {
+            const originalConsoleLog = console.log
+            const originalConsoleWarn = console.warn
+            const originalConsoleError = console.error
+            console.log = function() {
+                debugLog('log', ...arguments)
+                originalConsoleLog.apply(console, arguments)
+            }
+            console.warn = function() {
+                debugLog('warn', ...arguments)
+                originalConsoleWarn.apply(console, arguments)
+            }
+            console.error = function() {
+                debugLog('error', ...arguments)
+                originalConsoleError.apply(console, arguments)
+            }
+
+            function debugLog(severity, ...args) {
+                const wrapper = document.createElement('div')
+                wrapper.classList.add('debug-log')
+                wrapper.classList.add('debug-log-' + severity)
+                const message = args.map(arg => {
+                    const item = document.createElement('span')
+                    item.classList.add('debug-log-item')
+                    if (typeof arg === 'object') {
+                        item.innerText = JSON.stringify(arg, null, 2)
+                    } else {
+                        item.innerText = arg
+                    }
+                    return item
+                })
+
+                message.forEach(item => wrapper.appendChild(item))
+
+                document.getElementById('debug-logs').appendChild(wrapper)
+            }
+        })()
+    </script>
+
+    <script src="<%= objectUrl %>"></script>
+    <script>
+        <%= entryPoint %>()
+    </script>
+</body>
+</html>

@@ -25,11 +25,13 @@
     "rollup": "^3.14.0",
     "rollup-plugin-copy": "^3.5.0",
     "rollup-plugin-scss": "^4.0.0",
+    "rollup-plugin-string": "^3.0.0",
     "sass": "^1.67.0",
     "tslib": "^2.5.0",
     "typescript": "^5.0.4"
   },
   "dependencies": {
+    "lodash": "^4.17.21",
     "monaco-editor": "^0.43.0",
     "monaco-editor-textmate": "^4.0.0"
   }

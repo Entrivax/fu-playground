@@ -12,5 +12,5 @@
         "target": "ES6",
         "typeRoots": ["./typings"]
     },
-    "include": ["src/**/*", "typings/monaco.d.ts", "typings/windowExt.d.ts"]
+    "include": ["src/**/*", "typings/monaco.d.ts", "typings/windowExt.d.ts", "typings/ejs.d.ts"]
 }
