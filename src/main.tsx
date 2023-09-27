@@ -73,17 +73,17 @@ addOnSrcFileUpdateListener(() => {
 })
 
 const targetLanguages = [
-    { name: 'C', value: 'c', getGenerator: () => new libFut.GenC() },
-    { name: 'OpenCL C', value: 'cl', getGenerator: () => new libFut.GenCl() },
-    { name: 'C++', value: 'cpp', getGenerator: () => new libFut.GenCpp() },
-    { name: 'C#', value: 'cs', getGenerator: () => new libFut.GenCs() },
-    { name: 'D', value: 'd', getGenerator: () => new libFut.GenD() },
-    { name: 'Java', value: 'java', getGenerator: () => new libFut.GenJava() },
-    { name: 'JavaScript', value: 'js', getGenerator: () => new libFut.GenJs() },
-    { name: 'Python', value: 'py', getGenerator: () => new libFut.GenPy() },
-    { name: 'Swift', value: 'swift', getGenerator: () => new libFut.GenSwift() },
-    { name: 'TypeScript', value: 'ts', getGenerator: () => new libFut.GenTs().withGenFullCode() },
-    { name: 'TypeScript typings', value: 'd.ts', getGenerator: () => new libFut.GenTs() },
+    { name: 'C', value: 'c', getGenerator: () => new libFut.GenC(), macro: 'C' },
+    { name: 'OpenCL C', value: 'cl', getGenerator: () => new libFut.GenCl(), macro: 'CL' },
+    { name: 'C++', value: 'cpp', getGenerator: () => new libFut.GenCpp(), macro: 'CPP' },
+    { name: 'C#', value: 'cs', getGenerator: () => new libFut.GenCs(), macro: 'CSHARP' },
+    { name: 'D', value: 'd', getGenerator: () => new libFut.GenD(), macro: 'D' },
+    { name: 'Java', value: 'java', getGenerator: () => new libFut.GenJava(), macro: 'JAVA' },
+    { name: 'JavaScript', value: 'js', getGenerator: () => new libFut.GenJs(), macro: 'JS' },
+    { name: 'Python', value: 'py', getGenerator: () => new libFut.GenPy(), macro: 'PYTHON' },
+    { name: 'Swift', value: 'swift', getGenerator: () => new libFut.GenSwift(), macro: 'SWIFT' },
+    { name: 'TypeScript', value: 'ts', getGenerator: () => new libFut.GenTs().withGenFullCode(), macro: 'TS' },
+    { name: 'TypeScript typings', value: 'd.ts', getGenerator: () => new libFut.GenTs(), macro: 'TSD' },
 ]
 
 let selectedTargetLanguage = targetLanguages[0].value
@@ -289,6 +289,8 @@ function runDebug() {
     errors = host.errors
     parser.setHost(host);
     sema.setHost(host);
+    parser.addPreSymbol('JS')
+    parser.addPreSymbol('DEBUG')
     const system = libFut.FuSystem.new();
     let parent = system;
     let program: libFut.FuProgram | null = null
@@ -571,6 +573,14 @@ function getExtensionFromLanguage(lang: string) {
     }
     return languageTarget.value
 }
+function getMacroFromLanguage(lang: string) {
+    const languageTarget = targetLanguages.find(l => l.value === lang)
+    if (!languageTarget) {
+        console.error(`fut: ERROR: Unknown target language ${lang}`);
+        return;
+    }
+    return languageTarget.macro
+}
 
 function build() {
     disposeOutModels()
@@ -584,6 +594,7 @@ function build() {
     errors = host.errors
     parser.setHost(host);
     sema.setHost(host);
+    parser.addPreSymbol(getMacroFromLanguage(selectedTargetLanguage))
     const system = libFut.FuSystem.new();
     let parent = system;
     let program: libFut.FuProgram | null = null
@@ -639,9 +650,35 @@ export async function main() {
 public static class Debug
 {
     public static void Run() {
+        const int Width = 20;
+        const int Height = 30;
+        byte[Width * Height * 4] colors;
         Console.WriteLine(HelloFu.GetMessage());
+        for (int x = 0; x < Width; x++) {
+            for (int y = 0; y < Height; y++) {
+                int pxOffset = (x + y * Width) * 4;
+                int split = 3 * y / Height;
+                // R
+                colors[pxOffset] = split == 0 ? 255 : 0;
+                // G
+                colors[pxOffset + 1] = split == 1 ? 255 : 0;
+                // B
+                colors[pxOffset + 2] = split == 2 ? 255 : 0;
+                // Alpha
+                colors[pxOffset + 3] = 255;
+            }
+        }
+        DebugExt.WriteImage(Width, Height, colors);
     }
 }`)
+        createSrcFile('DebugExt.fu', `public static class DebugExt {
+    public static void WriteImage(int width, int height, byte[] imageData) {
+#if DEBUG
+native {console.log("#showImage;" + width + ";" + height); console.log(imageData); }
+#endif
+    }
+}`)
+        markAsReferenceFile('DebugExt.fu')
         debugEntryPoint = 'Debug.Run'
         openSrcFile('main.fu')
         deferedBuild()

@@ -62,18 +62,32 @@
                 debugLog('error', ...arguments)
                 originalConsoleError.apply(console, arguments)
             }
+            let onNextMessage = null
 
             function debugLog(severity, ...args) {
                 const wrapper = document.createElement('div')
                 wrapper.classList.add('debug-log')
                 wrapper.classList.add('debug-log-' + severity)
+                if (onNextMessage) {
+                    onNextMessage(args)
+                    onNextMessage = null
+                    return
+                }
                 const message = args.map(arg => {
                     const item = document.createElement('span')
                     item.classList.add('debug-log-item')
                     if (typeof arg === 'object') {
-                        item.innerText = JSON.stringify(arg, null, 2)
+                        item.innerText = arg?.toString()
                     } else {
                         item.innerText = arg
+                    }
+                    if (typeof arg === 'string') {
+                        const command = getCommand(arg)
+                        if (command) {
+                            onNextMessage = (args) => {
+                                command(item, args)
+                            }
+                        }
                     }
                     return item
                 })
@@ -81,6 +95,32 @@
                 message.forEach(item => wrapper.appendChild(item))
 
                 document.getElementById('debug-logs').appendChild(wrapper)
+            }
+
+            const commands = {
+                'showImage': function(args) {
+                    const width = parseInt(args[0])
+                    const height = parseInt(args[1])
+                    if (isNaN(width) || isNaN(height)) return null
+
+                    return (/** @type {Element} */ commandEl, nextMessageArgs) => {
+                        const canvas = document.createElement('canvas')
+                        const ctx = canvas.getContext('2d')
+                        canvas.width = width
+                        canvas.height = height
+                        ctx.putImageData(new ImageData(Uint8ClampedArray.from(nextMessageArgs[0]), width, height), 0, 0)
+                        commandEl.replaceWith(canvas)
+                    }
+                }
+            }
+
+            function getCommand(str) {
+                if (typeof str !== 'string' || str.charAt(0) !== '#') return null
+                const splitted = str.slice(1).split(';')
+                const commandName = splitted[0]
+                if (!(commandName in commands)) return null
+                const next = commands[commandName](splitted.slice(1))
+                return next
             }
         })()
     </script>
