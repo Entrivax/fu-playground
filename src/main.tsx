@@ -669,12 +669,25 @@ public static class Debug
             }
         }
         DebugExt.WriteImage(Width, Height, colors);
+        DebugExt.WriteColorFromArray(colors, Width * 0);
+        DebugExt.WriteColorFromArray(colors, Width * 10);
+        DebugExt.WriteColorFromArray(colors, Width * 20);
     }
 }`)
         createSrcFile('DebugExt.fu', `public static class DebugExt {
     public static void WriteImage(int width, int height, byte[] imageData) {
 #if DEBUG
 native {console.log(new window.debugUtils.ImageLog(width, height, imageData)); }
+#endif
+    }
+    public static void WriteColor(string color) {
+#if DEBUG
+native {console.log(new window.debugUtils.ColorLog(color)); }
+#endif
+    }
+    public static void WriteColorFromArray(byte[] pixels, int pixel) {
+#if DEBUG
+native {console.log(new window.debugUtils.ColorLog(pixels.slice(pixel * 4, (pixel + 1) * 4))); }
 #endif
     }
 }`)
