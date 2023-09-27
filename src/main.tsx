@@ -674,7 +674,7 @@ public static class Debug
         createSrcFile('DebugExt.fu', `public static class DebugExt {
     public static void WriteImage(int width, int height, byte[] imageData) {
 #if DEBUG
-native {console.log("#showImage;" + width + ";" + height); console.log(imageData); }
+native {console.log(new window.debugUtils.ImageLog(width, height, imageData)); }
 #endif
     }
 }`)

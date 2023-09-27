@@ -46,7 +46,14 @@
     </div>
     <div id="debug-logs"></div>
     <script id="utils">
-        (() => {
+        window.debugUtils = {
+            'ImageLog': function(width, height, data) {
+                this.width = width
+                this.height = height
+                this.data = data
+            }
+        }
+        ;(() => {
             const originalConsoleLog = console.log
             const originalConsoleWarn = console.warn
             const originalConsoleError = console.error
@@ -77,17 +84,14 @@
                     const item = document.createElement('span')
                     item.classList.add('debug-log-item')
                     if (typeof arg === 'object') {
-                        item.innerText = arg?.toString()
+                        if (arg instanceof window.debugUtils.ImageLog) {
+                            const canvas = getImageCanvas(arg)
+                            item.appendChild(canvas)
+                        } else {
+                            item.innerText = arg?.toString()
+                        }
                     } else {
                         item.innerText = arg
-                    }
-                    if (typeof arg === 'string') {
-                        const command = getCommand(arg)
-                        if (command) {
-                            onNextMessage = (args) => {
-                                command(item, args)
-                            }
-                        }
                     }
                     return item
                 })
@@ -97,30 +101,13 @@
                 document.getElementById('debug-logs').appendChild(wrapper)
             }
 
-            const commands = {
-                'showImage': function(args) {
-                    const width = parseInt(args[0])
-                    const height = parseInt(args[1])
-                    if (isNaN(width) || isNaN(height)) return null
-
-                    return (/** @type {Element} */ commandEl, nextMessageArgs) => {
-                        const canvas = document.createElement('canvas')
-                        const ctx = canvas.getContext('2d')
-                        canvas.width = width
-                        canvas.height = height
-                        ctx.putImageData(new ImageData(Uint8ClampedArray.from(nextMessageArgs[0]), width, height), 0, 0)
-                        commandEl.replaceWith(canvas)
-                    }
-                }
-            }
-
-            function getCommand(str) {
-                if (typeof str !== 'string' || str.charAt(0) !== '#') return null
-                const splitted = str.slice(1).split(';')
-                const commandName = splitted[0]
-                if (!(commandName in commands)) return null
-                const next = commands[commandName](splitted.slice(1))
-                return next
+            function getImageCanvas(imageLog) {
+                const canvas = document.createElement('canvas')
+                const ctx = canvas.getContext('2d')
+                canvas.width = imageLog.width
+                canvas.height = imageLog.height
+                ctx.putImageData(new ImageData(Uint8ClampedArray.from(imageLog.data), imageLog.width, imageLog.height), 0, 0)
+                return canvas
             }
         })()
     </script>
